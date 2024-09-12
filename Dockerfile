@@ -55,7 +55,7 @@ WORKDIR /repo
 ENV PYTHONPATH "${PYTHONPATH}:/repo"
 
 # Install dependencies (package itself is not installed)
-COPY pyproject.toml poetry.lock .
+COPY pyproject.toml .
 
 RUN poetry install --all-extras --no-root
 
