@@ -5,7 +5,7 @@ ARG PYTHON_VERSION=3.11
 ARG POETRY_VERSION=1.7.1
 
 ENV DEBIAN_FRONTEND noninteractive
-LABEL maintainer="Alexander Maletzky <alexander.maletzky@risc-software.at>"
+LABEL maintainer="RISC Software GmbH"
 
 RUN apt-get update && apt-get install -yq \
     build-essential \

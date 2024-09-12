@@ -24,57 +24,20 @@ stages:
   - build
   - publish
 
-build-base-image:
+build-image:
   stage: provision
   needs: []
   rules:
     - changes:
       - $PYTHON_WORKING_DIRECTORY/poetry.lock
-      - $PYTHON_WORKING_DIRECTORY/Dockerfile-base
+      - $PYTHON_WORKING_DIRECTORY/Dockerfile
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'   # Run on the default branch
-    - if: '$CI_COMMIT_BRANCH == "dev"'                # Run on the dev branch
-    - when: manual
-  allow_failure: true
-  extends:
-    - .kaniko-build-image
-  variables:
-    IMAGE_NAME: ${REGISTRY_BASE_URL}/base
-    DOCKERFILE: Dockerfile-base
-    WORKING_DIRECTORY: ${CI_PROJECT_DIR}/${PYTHON_WORKING_DIRECTORY}
-
-build-test-image:
-  stage: provision
-  needs: []
-  rules:
-    - changes:
-      - $PYTHON_WORKING_DIRECTORY/poetry.lock
-      - $PYTHON_WORKING_DIRECTORY/Dockerfile-test
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'   # Run on the default branch
-    - if: '$CI_COMMIT_BRANCH == "dev"'                # Run on the dev branch
+    - if: '$CI_COMMIT_BRANCH == "develop"'            # Run on the dev branch
     - when: manual
   allow_failure: true
   extends:
     - .kaniko-build-image
   variables:
     IMAGE_NAME: ${REGISTRY_BASE_URL}/test
-    DOCKERFILE: Dockerfile-test
+    DOCKERFILE: Dockerfile
     WORKING_DIRECTORY: ${CI_PROJECT_DIR}/${PYTHON_WORKING_DIRECTORY}
-
-build-cuda-image:
-  stage: provision
-  needs: []
-  rules:
-    - changes:
-      - $PYTHON_WORKING_DIRECTORY/poetry.lock
-      - $PYTHON_WORKING_DIRECTORY/Dockerfile-cuda
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'   # Run on the default branch
-    - if: '$CI_COMMIT_BRANCH == "dev"'                # Run on the dev branch
-    - when: manual
-  allow_failure: true
-  extends:
-    - .kaniko-build-image
-  variables:
-    IMAGE_NAME: ${REGISTRY_BASE_URL}/cuda
-    DOCKERFILE: Dockerfile-cuda
-    WORKING_DIRECTORY: ${CI_PROJECT_DIR}/${PYTHON_WORKING_DIRECTORY}
-
