@@ -1,0 +1,80 @@
+# includes from the global ci-templates repository
+include:
+  - project: 'common/ci-templates'
+    ref: main
+    file: '/devops/python/test-pipeline.yml'
+  - project: 'common/ci-templates'
+    ref: main
+    file: '/devops/container/build.yml'
+
+# optional - override the default values, if specified
+variables:
+  REGISTRY_BASE_URL: ${CI_REGISTRY_IMAGE}/catabra_pandas
+  # specify python working directory (e.g. for mixed repositories)
+  PYTHON_WORKING_DIRECTORY: "."
+  # define a specific python version. Will be replaced in a future version by configuring pyenv in pyproject.toml
+  PYTHON_VERSION: '3.11'
+  # defined image for python testing - should be able to run all python stuff
+  PYTHON_IMAGE: ${REGISTRY_BASE_URL}/test
+
+stages:
+  - provision
+  - sast
+  - test
+  - build
+  - publish
+
+build-base-image:
+  stage: provision
+  needs: []
+  rules:
+    - changes:
+      - $PYTHON_WORKING_DIRECTORY/poetry.lock
+      - $PYTHON_WORKING_DIRECTORY/Dockerfile-base
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'   # Run on the default branch
+    - if: '$CI_COMMIT_BRANCH == "dev"'                # Run on the dev branch
+    - when: manual
+  allow_failure: true
+  extends:
+    - .kaniko-build-image
+  variables:
+    IMAGE_NAME: ${REGISTRY_BASE_URL}/base
+    DOCKERFILE: Dockerfile-base
+    WORKING_DIRECTORY: ${CI_PROJECT_DIR}/${PYTHON_WORKING_DIRECTORY}
+
+build-test-image:
+  stage: provision
+  needs: []
+  rules:
+    - changes:
+      - $PYTHON_WORKING_DIRECTORY/poetry.lock
+      - $PYTHON_WORKING_DIRECTORY/Dockerfile-test
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'   # Run on the default branch
+    - if: '$CI_COMMIT_BRANCH == "dev"'                # Run on the dev branch
+    - when: manual
+  allow_failure: true
+  extends:
+    - .kaniko-build-image
+  variables:
+    IMAGE_NAME: ${REGISTRY_BASE_URL}/test
+    DOCKERFILE: Dockerfile-test
+    WORKING_DIRECTORY: ${CI_PROJECT_DIR}/${PYTHON_WORKING_DIRECTORY}
+
+build-cuda-image:
+  stage: provision
+  needs: []
+  rules:
+    - changes:
+      - $PYTHON_WORKING_DIRECTORY/poetry.lock
+      - $PYTHON_WORKING_DIRECTORY/Dockerfile-cuda
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'   # Run on the default branch
+    - if: '$CI_COMMIT_BRANCH == "dev"'                # Run on the dev branch
+    - when: manual
+  allow_failure: true
+  extends:
+    - .kaniko-build-image
+  variables:
+    IMAGE_NAME: ${REGISTRY_BASE_URL}/cuda
+    DOCKERFILE: Dockerfile-cuda
+    WORKING_DIRECTORY: ${CI_PROJECT_DIR}/${PYTHON_WORKING_DIRECTORY}
+

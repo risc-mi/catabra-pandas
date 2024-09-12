@@ -1,0 +1,144 @@
+[tool.poetry]
+# https://python-poetry.org/docs/pyproject/
+name = "catabra-pandas"
+version = "0.0.1"
+description = "CaTabRa-pandas is a library with additional functionality for pandas"
+license = "Apache 2.0 with Commons Clause"
+authors = ["RISC Software GmbH"]
+readme = "README.md"
+repository = "https://github.com/risc-mi/catabra-pandas"
+packages = [
+  { include = "catabra_pandas" }
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+]
+
+[tool.poetry.dependencies]
+# https://python-poetry.org/docs/dependency-specification/
+python = "^3.7"
+pandas = ">=1.0.0"
+
+[tool.poetry.group.dev.dependencies]
+# https://python-poetry.org/docs/master/managing-dependencies/
+poethepoet = "^0.19.0"
+black = { version = "^23.3.0", extras = ["jupyter"] }
+ruff = "^0.0.257"
+isort = "^5.0.0"
+pytest = "^7.2.1"
+pytest-clarity = "^1.0.1"
+pytest-cov = "4.0.0"
+pytest-xdist = "^3.2.0"
+mkdocs = "^1.4.3"
+mkdocs-material = "^9.1.15"
+mkdocstrings = {extras = ["python"], version = "^0.21.0"}
+liccheck = "^0.9.2"
+setuptools = ">=59.5.0"
+
+[tool.poetry.group.optional.dependencies]
+dask = {version=">=2022.2.0", extras=['all']}
+
+[tool.poetry_bumpversion.file."catabra_pandas/__version__.py"]
+
+[tool.poe.tasks]
+# https://github.com/nat-n/poethepoet
+_format = "black ."
+_sort_imports = "isort ."
+_lint = "ruff check --fix ."
+
+_check_format = "black --check ."
+_check_sort_imports = "isort --check ."
+_check_lint = "ruff check ."
+
+# if you are using poetry for dependency management, you have to generate a requirements.txt first
+_convert_to_req_txt = { shell = "poetry export --without-hashes --format=requirements.txt > requirements.txt" }
+# check authorization of the licenses of dependencies as defined in [tool.liccheck] section 
+# (or a separate liccheck.ini-file)
+_check_licenses = "liccheck -s liccheck.ini -r requirements.txt"
+
+check_licenses = [
+    "_convert_to_req_txt",
+    "_check_licenses",
+]
+
+docs = "mkdocs serve"
+precommit = ["_format", "_sort_imports", "_lint"]
+check = ["_check_format", "_check_sort_imports", "_check_lint", "check_licenses"]
+test = "pytest"
+
+[tool.black]
+# https://black.readthedocs.io/en/stable/usage_and_configuration/the_basics.html#configuration-via-a-file
+line-length = 120
+
+[tool.isort]
+# https://pycqa.github.io/isort/docs/configuration/config_files
+profile = "black"
+
+[tool.pytest.ini_options]
+# https://docs.pytest.org/en/7.1.x/reference/customize.html
+addopts = "--color=yes --doctest-modules  -ra --cov --cov-report=html --cov-report term --cov-report xml:coverage.xml --exitfirst --failed-first --strict-config --strict-markers --verbosity=2 --junitxml=python-junit.xml"
+xfail_strict = true
+pythonpath = ["catabra_pandas"]
+testpaths = ["catabra_pandas", "tests"]
+# ignore any of these paths
+norecursedirs = [ ]
+markers = [
+    "slow: marks tests as slow",
+    "allowed_to_fail: marks tests that can fail under certain conditions without it being an error",
+    "manual: marks tests that must be executed manually"
+]
+
+[tool.ruff]
+# https://github.com/charliermarsh/ruff
+fix = true
+ignore-init-module-imports = true
+line-length = 120
+src = ["catabra_pandas", "tests"]
+
+[tool.ruff.pycodestyle]
+max-doc-length = 120
+
+[tool.ruff.pydocstyle]
+convention = "numpy"
+
+
+[tool.liccheck]
+# see also: https://pypi.org/project/liccheck/
+# Authorized and unauthorized licenses in LOWER CASE
+authorized_licenses = [
+        "bsd",
+        "new bsd",
+        "bsd 3-clause",
+        "bsd license",
+        "isc license",
+        "isc license (iscl)",
+        "apache",
+        "apache 2.0",
+        "apache software",
+        "apache software license",
+        "apache license, version 2.0",
+        "gnu lgpl",
+        "historical permission notice and disclaimer (hpnd)",
+        "lgpl with exceptions or zpl",
+        "mozilla public license 2.0 (mpl 2.0)",
+        "mit",
+        "mit license",
+        "new bsd license",
+        "python software foundation license",
+        "python software foundation",
+        "simplified bsd",
+        "the unlicense (unlicense)",
+	]
+# as_regex = true -> e.g. '\bgpl'
+unauthorized_licenses = [
+	"gpl v3",
+	"gnu general public license v2 or later (gplv2+)",
+]
+level = "standard"  # alternatives: "cautious", "paranoid"
+requirement_txt_file = "./requirements.txt"
+reporting_txt_file = "./liccheck_reporting.txt" # by default is None
+
+[tool.liccheck.authorized_packages]
+# Python software license (see http://zesty.ca/python/uuid.README.txt)
+uuid = "1.30"
+
