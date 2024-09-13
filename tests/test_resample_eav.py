@@ -173,8 +173,9 @@ def test_categorical():
     out1 = resample_eav(df, windows, agg, optimize="time", **kwargs)
     out2 = resample_eav(df, windows, agg, optimize="memory", **kwargs)
     ground_truth = resample_eav_slow(df, windows, agg, **kwargs)
-    compare_dataframes(out1, ground_truth)
-    compare_dataframes(out2, ground_truth)
+    # tie-breaking may differ between versions => don't check equality of "mode"
+    compare_dataframes(out1, ground_truth, ignore_columns=[("attr_1", "mode"), ("attr_2", "mode")])
+    compare_dataframes(out1, out2)
 
 
 def test_custom_agg(seed=None):
@@ -244,7 +245,7 @@ def test_include_stop():
 
 
 @pytest.mark.manual
-@pytest.mark.parametrize(argnames=["dask"], argvalues=[(False,), (True,)], ids=["dask", "pandas"])
+@pytest.mark.parametrize(argnames=["dask"], argvalues=[(False,), (True,)], ids=["pandas", "dask"])
 def test_large(dask):
     if dask:
         try:

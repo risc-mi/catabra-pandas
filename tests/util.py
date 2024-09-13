@@ -267,12 +267,15 @@ def resample_interval_slow(
     return pd.concat([windows, out], axis=1, sort=False)
 
 
-def compare_dataframes(df1: pd.DataFrame, df2: pd.DataFrame, eps: float = 1e-7):
+def compare_dataframes(df1: pd.DataFrame, df2: pd.DataFrame, eps: float = 1e-7, ignore_columns=()):
     assert df1.shape == df2.shape, str(df1.shape) + " vs. " + str(df2.shape)
     assert (df1.index == df2.index).all()
     assert (df1.columns == df2.columns).all()
     for c in df1.columns:
         assert df1[c].dtype.kind == df2[c].dtype.kind, c
+        if c in ignore_columns:
+            return
+
         s1 = df1[c]
         s2 = df2[c]
         if df1[c].dtype.kind == "M":

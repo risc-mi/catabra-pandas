@@ -276,9 +276,14 @@ def resample_eav(
     df = df[mask]
 
     if not (isinstance(df, pd.DataFrame) and isinstance(windows, pd.DataFrame)):
+        try:
+            from dask import dataframe as dd  # only needed for type checking
+        except ModuleNotFoundError:
+            raise TypeError("df or windows have unsupported type.")
+
         # Dask DataFrame
-        assert isinstance(df, pd.DataFrame) or str(type(df)) == "<class 'dask.dataframe.core.DataFrame'>"
-        assert isinstance(windows, pd.DataFrame) or str(type(windows)) == "<class 'dask.dataframe.core.DataFrame'>"
+        assert isinstance(df, pd.DataFrame) or isinstance(df, dd.DataFrame)
+        assert isinstance(windows, pd.DataFrame) or isinstance(windows, dd.DataFrame)
         if entity_col is None:
             raise NotImplementedError("When passing Dask DataFrames, an entity column must be specified.")
         elif len(columns) > len(set(columns)):
@@ -373,7 +378,7 @@ def resample_eav(
                 init_values=init_values,
                 swap_df_windows=True,
                 # Dask kwargs
-                align_dataframes=True,
+                align_dataframes=True,  # doesn't work in some Dask versions; workaround unknown
                 enforce_metadata=False,
                 meta=meta,
             ).compute()
@@ -401,7 +406,7 @@ def resample_eav(
                 init_values=init_values,
                 swap_df_windows=False,
                 # Dask kwargs
-                align_dataframes=True,
+                align_dataframes=True,  # doesn't work in some Dask versions; workaround unknown
                 meta=meta,
             )
     else:
@@ -626,9 +631,14 @@ def resample_interval(
     assert window_stop_col not in windows.columns or windows[window_stop_col].dtype == time_dtype
 
     if not (isinstance(df, pd.DataFrame) and isinstance(windows, pd.DataFrame)):
+        try:
+            from dask import dataframe as dd  # only needed for type checking
+        except ModuleNotFoundError:
+            raise TypeError("df or windows have unsupported type.")
+
         # Dask DataFrame
-        assert isinstance(df, pd.DataFrame) or str(type(df)) == "<class 'dask.dataframe.core.DataFrame'>"
-        assert isinstance(windows, pd.DataFrame) or str(type(windows)) == "<class 'dask.dataframe.core.DataFrame'>"
+        assert isinstance(df, pd.DataFrame) or isinstance(df, dd.DataFrame)
+        assert isinstance(windows, pd.DataFrame) or isinstance(windows, dd.DataFrame)
         if entity_col is None:
             raise NotImplementedError("When passing Dask DataFrames, an entity column must be specified.")
 
@@ -719,7 +729,7 @@ def resample_interval(
                 attributes=attributes,
                 swap_df_windows=True,
                 # Dask kwargs
-                align_dataframes=True,
+                align_dataframes=True,  # doesn't work in some Dask versions; workaround unknown
                 enforce_metadata=False,
                 meta=meta,
             ).compute()
@@ -740,7 +750,7 @@ def resample_interval(
                 attributes=attributes,
                 swap_df_windows=False,
                 # Dask kwargs
-                align_dataframes=True,
+                align_dataframes=True,  # doesn't work in some Dask versions; workaround unknown
                 meta=meta,
             )
     else:
@@ -1050,7 +1060,7 @@ class make_windows:
                 raise ValueError(f'"{value}" not found in the given DataFrame.')
         elif isinstance(value, pd.DataFrame):
             raise ValueError(f"`{name}` must not be a DataFrame. Pass a Series{or_index} instead.")
-        elif str(type(value)).startswith("<class 'dask."):
+        elif str(type(value)).startswith("<class 'dask.") or str(type(value)).startswith("<class 'dask_expr."):
             raise ValueError(f"`{name}` must not be a Dask object. Pass a Pandas Series{or_index} instead.")
         elif isinstance(value, collections.abc.Iterable):
             raise ValueError(

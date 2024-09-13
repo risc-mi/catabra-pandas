@@ -8,7 +8,7 @@
   <a href="#Acknowledgments"><b>Acknowledgments</b></a>
 </p>
 
-[![Platform Support](https://img.shields.io/badge/python->=3.7-blue)]()
+[![Platform Support](https://img.shields.io/badge/python->=3.6-blue)]()
 [![Platform Support](https://img.shields.io/badge/pandas->=1.0-blue)]()
 [![Platform Support](https://img.shields.io/badge/platform-Linux%20|%20Windows%20|%20MacOS-blue)]()
 
@@ -31,7 +31,7 @@ If you are interested in **CaTabRa-pandas**, you might be interested in **[CaTab
 
 ## Quickstart
 
-**CaTabRa-pandas** has minimal requirements and can be installed in every environment with Python >= 3.7 and pandas >= 1.0.
+**CaTabRa-pandas** has minimal requirements and can be installed in every environment with Python >= 3.6 and pandas >= 1.0.
 
 Once installed, **CaTabRa-pandas** can be readily used:
 
