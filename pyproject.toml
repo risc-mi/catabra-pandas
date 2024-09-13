@@ -16,27 +16,22 @@ classifiers = [
 
 [tool.poetry.dependencies]
 # https://python-poetry.org/docs/dependency-specification/
-python = "^3.7"
+python = "^3.6.1"
 pandas = ">=1.0.0"
 
 [tool.poetry.group.dev.dependencies]
 # https://python-poetry.org/docs/master/managing-dependencies/
-poethepoet = "^0.19.0"
-black = { version = "^23.3.0", extras = ["jupyter"] }
-ruff = "^0.0.257"
-isort = "^5.0.0"
-pytest = "^7.2.1"
-pytest-clarity = "^1.0.1"
-pytest-cov = "4.0.0"
-pytest-xdist = "^3.2.0"
-mkdocs = "^1.4.3"
-mkdocs-material = "^9.1.15"
-mkdocstrings = {extras = ["python"], version = "^0.21.0"}
-liccheck = "^0.9.2"
-setuptools = ">=59.5.0"
-
-[tool.poetry.group.optional.dependencies]
-dask = {version=">=2022.2.0", extras=['all']}
+poethepoet = { version = ">=0.19.0", python = "^3.9" }
+black = { version = "^23.3.0", extras = ["jupyter"], python = "^3.9" }
+ruff = { version = ">=0.6.4", python = "^3.11" }
+isort = { version = "^5.12.0", python = "^3.9" }
+pytest = { version = "^7.2.1", python = "^3.9" }
+pytest-clarity = { version = "^1.0.1", python = "^3.9" }
+pytest-cov = { version = "4.0.0", python = "^3.9" }
+pytest-xdist = { version = "^3.2.0", python = "^3.9" }
+liccheck = { version = "^0.9.2", python = "^3.9" }
+setuptools = { version = ">=59.5.0", python = "^3.9" }
+dask = { version = ">=2022.2.0,<2024.3.0", extras = ["dataframe"], python = "^3.9" }    # avoid dask-expr, since there are some issues
 
 [tool.poetry_bumpversion.file."catabra_pandas/__version__.py"]
 
@@ -91,14 +86,13 @@ markers = [
 [tool.ruff]
 # https://github.com/charliermarsh/ruff
 fix = true
-ignore-init-module-imports = true
 line-length = 120
 src = ["catabra_pandas", "tests"]
 
-[tool.ruff.pycodestyle]
+[tool.ruff.lint.pycodestyle]
 max-doc-length = 120
 
-[tool.ruff.pydocstyle]
+[tool.ruff.lint.pydocstyle]
 convention = "numpy"
 
 
