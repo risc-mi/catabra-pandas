@@ -1,7 +1,7 @@
 # This dockerfile serves as a base for all testing images.
 # It contains the minimal dependencies and is therefore smaller.
 from debian:stable-slim
-ARG PYTHON_VERSION=3.11
+ARG PYTHON_VERSION=3.11.5
 ARG POETRY_VERSION=1.7.1
 
 ENV DEBIAN_FRONTEND noninteractive
