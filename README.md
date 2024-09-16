@@ -31,7 +31,11 @@ If you are interested in **CaTabRa-pandas**, you might be interested in **[CaTab
 
 ## Quickstart
 
-**CaTabRa-pandas** has minimal requirements and can be installed in every environment with Python >= 3.6 and pandas >= 1.0.
+**CaTabRa-pandas** has minimal requirements (Python >= 3.6, pandas >= 1.0) and can be easily installed using `pip`:
+
+```
+pip install catabra-pandas
+```
 
 Once installed, **CaTabRa-pandas** can be readily used:
 
