@@ -778,6 +778,14 @@ def impute(
     -------
     pd.DataFrame
         Imputed DataFrame. Due to the nature of the provided imputation methods, the result may still contain NaN.
+
+    Notes
+    -----
+    This function mainly boosts the performance of grouped linear interpolations, i.e., when `group_by` is not None and
+    `method` is "linear" or "lfill": depending on the input, a speed-up factor of up to 10 is possible (especially if
+    `on` is not mixed up).
+    Other imputation strategies, like "ffill", are not faster than plain `df.groupby(on).ffill()`; they are merely
+    covered for the sake of completeness.
     """
 
     if method == "afill":
@@ -812,13 +820,7 @@ def impute(
             raise ValueError('`method` must be "ffill", "bfill", "afill", "lfill" or "linear".')
         return df if out is None else out
 
-    if method == "ffill":
-        shift = [1]
-    elif method == "bfill":
-        shift = [-1]
-    elif method == "linear":
-        shift = [1, -1]
-    else:
+    if method not in ("ffill", "bfill", "linear"):
         raise ValueError('`method` must be "ffill", "bfill", "afill", "lfill" or "linear".')
 
     if isinstance(group_by, (int, np.integer)):
@@ -847,51 +849,42 @@ def impute(
     if not inplace:
         df = df.copy()
 
-    if len(df) <= 100 * len(np.unique(group_values)):
+    # the following works for "ffill" and "bfill", too, but empirical results suggest that in these cases
+    # `df.groupby(on).ffill()` is even faster, so we leave it
+    if method == "linear":
         # check whether groups are mixed up
         mask0 = group_values != np.roll(group_values, -1)
         mask0[-1] = True
 
         if len(np.unique(group_values[mask0])) == mask0.sum():
-            # fast version
-            # `mask` specifies those entries that cannot be imputed, and therefore must be set to NaN after imputation
-            mask = None
-            is_na = df[columns].isna()
-            for s in shift:
-                mask0 = group_values != np.roll(group_values, s)
-                mask0[(s - 1) // 2] = True
-                mask_cur = is_na & pd.DataFrame(index=df.index, data={c: mask0 for c in columns})
-                while True:
-                    # the number of iterations of this loop is bounded by the maximum group size
-                    mask1 = is_na & ~mask_cur & np.roll(mask_cur, s, axis=0)
-                    if mask1.any(axis=None):
-                        mask_cur |= mask1
-                    else:
-                        break
-                if mask is None:
-                    mask = mask_cur
-                else:
-                    mask |= mask_cur
+            indexer = None
+        else:
+            indexer = np.argsort(group_values, kind="stable")
+            df = df.iloc[indexer]
+            group_values = group_values[indexer]
 
-            if method == "linear":
-                df[columns] = df[columns].interpolate(method=method, axis=0, limit=limit, limit_area="inside")
-            elif method == "ffill":
-                df[columns] = df[columns].ffill(axis=0, limit=limit)
-            else:
-                df[columns] = df[columns].bfill(axis=0, limit=limit)
-
-            for c in columns:
-                df.loc[mask[c], c] = None
-
-            return df
-
-    # slow version
-    if method == "linear":
-        df[columns] = (
-            df[columns]
-            .groupby(group_values)
-            .transform(lambda g: g.interpolate(method=method, axis=0, limit=limit, limit_area="inside"))
+        # `mask` specifies those entries that cannot be imputed, and therefore must be set to NaN after imputation
+        mask = _can_impute(
+            df[columns],
+            group_values,
+            forward=method in ("ffill", "linear"),
+            backward=method in ("bfill", "linear"),
+            union=True,
         )
+
+        if method == "linear":
+            df[columns] = df[columns].interpolate(method=method, axis=0, limit=limit, limit_area="inside")
+        elif method == "ffill":
+            df[columns] = df[columns].ffill(axis=0, limit=limit)
+        else:
+            df[columns] = df[columns].bfill(axis=0, limit=limit)
+
+        for c in columns:
+            df.loc[mask[c], c] = None
+
+        if indexer is not None:
+            df = df.iloc[np.argsort(indexer)]
+
     elif method == "ffill":
         df[columns] = df[columns].groupby(group_values).ffill(limit=limit)
     else:
@@ -1209,6 +1202,55 @@ def _parse_column_specs(df: Union[pd.DataFrame, "dask.dataframe.DataFrame"], spe
         out.append(s)
 
     return out
+
+
+def _can_impute(
+    df: Union[pd.DataFrame, pd.Series],
+    group_values: np.ndarray,
+    forward: bool = False,
+    backward: bool = False,
+    union: bool = True,
+) -> Union[list, pd.DataFrame, pd.Series]:
+    # tacit assumptions:
+    # * `group_values` is not mixed up
+    out = []
+    is_na = df.isna()
+    with np.testing.suppress_warnings("always") as sup:
+        sup.filter(RuntimeWarning)
+        template = 0.0 / (1.0 - is_na.astype(np.float32))  # NaN stays NaN, other values are 0
+
+    if forward:
+        shift = [(1, template)]
+    else:
+        shift = []
+    if backward:
+        shift.append((-1, template.copy()))
+
+    for s, mask_cur in shift:
+        mask0 = group_values != np.roll(group_values, s)
+        mask0[(s - 1) // 2] = True
+        # `mask0` is True for the first/last row of each group if `shift` is 1/-1.
+
+        if isinstance(df, pd.DataFrame):
+            for c in df.columns:
+                mask_cur.loc[is_na[c] & mask0, c] = 1.0
+        else:
+            mask_cur[is_na & mask0] = 1.0
+
+        if s > 0:
+            mask_cur.ffill(axis=0, inplace=True)
+        else:
+            mask_cur.bfill(axis=0, inplace=True)
+
+        # all values in `mask_cur` are either 0 or 1; 1-values correspond to entries that cannot be imputed
+        mask_cur = mask_cur.astype(bool)
+
+        if union and len(out) > 0:
+            out[0] |= mask_cur
+        else:
+            out.append(mask_cur)
+
+    return out[0] if len(out) == 1 else out
 
 
 def _factorize_df_multiindex(
