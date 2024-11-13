@@ -764,8 +764,8 @@ def impute(
             to the average of the two values,
         * "lfill": linear interpolation followed by forward- and backward filling; note that if all groups have 3 or
             fewer rows, "lfill" is equivalent to "afill",
-        * "linear": linear interpolation; note that no extrapolation happens, and also note that row index values are
-            completely ignored.
+        * "linear": linear interpolation; note that no extrapolation happens (equivalent to `area="inside"` in
+            `pd.DataFrame.interpolate()`), and also note that row index values are completely ignored.
     group_by : str | int | pd.Series | pd.Index | array, optional
         Column or index to group by. Integers are interpreted as row index levels, strings as column names.
         Series and arrays may be provided as well; this could be the result of function `factorize()`, for instance.
@@ -807,7 +807,7 @@ def impute(
         elif method == "bfill":
             out = df.bfill(axis=0, limit=limit, inplace=inplace)
         elif method == "linear":
-            out = df.interpolate(method="linear", axis=0, limit=limit, inplace=inplace)
+            out = df.interpolate(method="linear", axis=0, limit=limit, inplace=inplace, limit_area="inside")
         else:
             raise ValueError('`method` must be "ffill", "bfill", "afill", "lfill" or "linear".')
         return df if out is None else out
@@ -847,7 +847,7 @@ def impute(
     if not inplace:
         df = df.copy()
 
-    if limit is None and len(df) <= 100 * len(np.unique(group_values)):
+    if len(df) <= 100 * len(np.unique(group_values)):
         # check whether groups are mixed up
         mask0 = group_values != np.roll(group_values, -1)
         mask0[-1] = True
@@ -874,11 +874,11 @@ def impute(
                     mask |= mask_cur
 
             if method == "linear":
-                df[columns] = df[columns].interpolate(method=method, axis=0)
+                df[columns] = df[columns].interpolate(method=method, axis=0, limit=limit, limit_area="inside")
             elif method == "ffill":
-                df[columns] = df[columns].ffill(axis=0)
+                df[columns] = df[columns].ffill(axis=0, limit=limit)
             else:
-                df[columns] = df[columns].bfill(axis=0)
+                df[columns] = df[columns].bfill(axis=0, limit=limit)
 
             for c in columns:
                 df.loc[mask[c], c] = None
@@ -888,7 +888,9 @@ def impute(
     # slow version
     if method == "linear":
         df[columns] = (
-            df[columns].groupby(group_values).transform(lambda g: g.interpolate(method=method, axis=0, limit=limit))
+            df[columns]
+            .groupby(group_values)
+            .transform(lambda g: g.interpolate(method=method, axis=0, limit=limit, limit_area="inside"))
         )
     elif method == "ffill":
         df[columns] = df[columns].groupby(group_values).ffill(limit=limit)
