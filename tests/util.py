@@ -303,8 +303,8 @@ def create_random_data(
     seed: Optional[int] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     rng = np.random.RandomState(seed=seed)
-    values = _create_random_series(n_observations, value_dtype, rng)
-    times = _create_random_series(n_observations, time_dtype, rng)
+    values = create_random_series(n_observations, value_dtype, rng)
+    times = create_random_series(n_observations, time_dtype, rng)
     min_ts = times.min()
     max_ts = times.max()
     if value_dtype in ("float", "timedelta", "timestamp", "category", "str"):
@@ -372,7 +372,7 @@ def create_random_data(
     return df, windows
 
 
-def _create_random_series(n: int, dtype: str, rng: np.random.RandomState) -> pd.Series:
+def create_random_series(n: int, dtype: str, rng: np.random.RandomState) -> pd.Series:
     if dtype == "float":
         distr = rng.choice(["normal", "exponential", "uniform"])
         if distr == "normal":
@@ -392,10 +392,10 @@ def _create_random_series(n: int, dtype: str, rng: np.random.RandomState) -> pd.
         return pd.Series(data=rng.choice([False, True], size=n, p=[p, 1 - p], replace=True))
     elif dtype == "timedelta":
         return pd.to_timedelta(
-            _create_random_series(n, "float", rng), unit=str(rng.choice(["seconds", "hours", "days"]))
+            create_random_series(n, "float", rng), unit=str(rng.choice(["seconds", "hours", "days"]))
         )
     elif dtype == "timestamp":
-        return _create_random_series(n, "timedelta", rng) + pd.Timestamp.now()
+        return create_random_series(n, "timedelta", rng) + pd.Timestamp.now()
     elif dtype == "str":
         m = rng.randint(2, 20)
         p = rng.uniform(0.1, 1, size=m)

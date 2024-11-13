@@ -166,8 +166,8 @@ def combine_intervals(
     Parameters
     ----------
     df : pd.DataFrame
-        DataFrame with the original intervals. Must have columns `start_col`, `stop_col` and all columns in `cols` and
-        `group_by`.
+        DataFrame with the original intervals. Must have columns `start_col`, `stop_col` and all columns in `attr_cols`
+        and `group_by`.
     start_col : str, default="start"
         Name of the column containing the start (left) endpoints of the intervals.
     stop_col : str, optional, default="stop"
@@ -382,14 +382,14 @@ def find_containing_interval(
 
     assert (stop_col is None) != (length_col is None)
 
-    if isinstance(point_cols, str):
+    if not isinstance(point_cols, list):
         point_cols = [point_cols]
     else:
         assert len(point_cols) > 0
 
     if group_by is None:
         group_by = []
-    elif isinstance(group_by, str):
+    elif not isinstance(group_by, list):
         group_by = [group_by]
 
     points = points.copy()
@@ -973,6 +973,204 @@ def inner_or_cross_join(left: pd.DataFrame, right: pd.DataFrame, on=None) -> pd.
         return left.join(right, on=on, how="inner")
 
 
+def factorize(
+    left: Union[pd.DataFrame, pd.Series, pd.Categorical, pd.Index, np.ndarray],
+    right: Union[pd.DataFrame, pd.Series, pd.Categorical, pd.Index, np.ndarray, None] = None,
+    sort: bool = False,
+    return_count: bool = False,
+) -> Union[np.ndarray, tuple[np.ndarray, int], tuple[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray, int]]:
+    """Factorize DataFrames, Series, Indexes or arrays. That means, rows are mapped to integer keys such that rows with
+    identical values are mapped to the same key, and rows with distinct values to distinct keys. This is often a useful
+    preprocessing step in group-by- and join-related functions.
+
+    Parameters
+    ----------
+    left : pd.DataFrame or pd.Series or pd.Index or array
+        First object to factorize.
+    right : pd.DataFrame or pd.Series or pd.Index or array, optional
+        Second object to factorize alongside `left`, optional. If given, matching rows in `left` and `right` are mapped
+        to the same key, and distinct rows to distinct keys.
+        The type of `right` does not need to be the same as the type of `left`, but if `left` has multiple
+        columns/levels, `right` needs to have the same number of columns/levels.
+    sort : bool, default=False
+        If False, the first row in `left` is mapped to the smallest key, the second unique row to the second-smallest
+        key, and so on. This does *not* necessarily imply that the returned arrays are sorted, e.g., if the first row
+        appears multiple times.
+        If True, the smallest row in `left` and `right` (wrt. lexicographic ordering of all columns/levels) is mapped
+        to the smallest key, the second-smallest row to the second-smallest key, and so on.
+        See Notes for more details.
+    return_count : bool, default=False
+        Return the number of unique keys.
+
+    Returns
+    -------
+    left_keys : array
+        Keys of `left`, 1-D array with the same length as `left`.
+    right_keys : array
+        Keys of `right`, 1-D array with the same length as `right`. Only returned if `right` is not None.
+    count : int
+        Number of unique keys appearing in `left_keys` and `right_keys`. Only returned if `return_count` is True.
+        Note that the keys are not necessarily in the interval `[0, count)`.
+
+    See Also
+    --------
+    pandas.core.reshape.merge.get_join_indexers
+    pandas.core.reshape.merge._factorize_keys
+    pandas.core.reshape.merge._get_join_keys
+
+    Notes
+    -----
+    Column/index names in `left` and `right` are completely ignored. NaN and +/-Inf are treated as separate factors.
+
+    With `sort=False`, `left.iloc[_map(left_keys)]` preserves the order of rows in `left`;
+    `right.iloc[_map(right_keys)]` does not necessarily preserve the order of rows in `right`, though.
+    (NB: `_map` is meant to map the keys to the range `[0, len(left))` and `[0, len(right))`, respectively.
+    That's *not* the same as computing the ranks of the keys!)
+
+    With `sort=True`, `left.iloc[np.argsort(left_keys)]` sorts `left` and `right.iloc[np.argsort(right_keys)]` sorts
+    `right`.
+    """
+    # largely inspired by functions in pandas.core.reshape.merge, e.g., `get_join_indexers()`
+
+    if isinstance(left, pd.Categorical):
+        left = pd.Series(left)
+    if isinstance(right, pd.Categorical):
+        right = pd.Series(right)
+
+    if isinstance(left, pd.Series):
+        if left.dtype.name == "category":
+            if right is None:
+                left = left.cat.codes.values
+            elif isinstance(right, pd.Series) and left.dtype == right.dtype:
+                left = left.cat.codes.values
+                right = right.cat.codes.values
+            else:
+                left = np.asarray(left.values)
+        else:
+            left = np.asarray(left.values)
+    elif isinstance(left, pd.Index):
+        if not isinstance(left, pd.MultiIndex):
+            left = np.asarray(left._values)
+    elif isinstance(left, np.ndarray):
+        if left.ndim != 1:
+            raise ValueError(f"left must be an array with rank 1, but got rank {left.ndim}")
+
+    if isinstance(right, pd.Series):
+        right = np.asarray(right.values)
+    elif isinstance(right, pd.Index):
+        if not isinstance(right, pd.MultiIndex):
+            right = np.asarray(right._values)
+    elif isinstance(right, np.ndarray):
+        if right.ndim != 1:
+            raise ValueError(f"right must be an array with rank 1, but got rank {right.ndim}")
+
+    # convert datetime arrays into DatetimeArray
+    if isinstance(left, np.ndarray) and left.dtype.kind == "M":
+        left = pd.Index(left)._values
+    if isinstance(right, np.ndarray) and right.dtype.kind == "M":
+        right = pd.Index(right)._values
+
+    # left and right are now either DataFrame, MultiIndex or 1-D array-like; right may also be None
+
+    if right is None:
+        if len(left) == 0:
+            res = (np.empty(0, dtype=np.int64), 0)
+        elif isinstance(left, pd.DataFrame):
+            res = factorize(left, right=left.iloc[:1], sort=sort, return_count=return_count)[::2]
+        else:
+            res = factorize(left, right=left[:1], sort=sort, return_count=return_count)[::2]
+
+        return res if return_count else res[0]
+    elif len(left) == 0:
+        lkey = np.empty(0, dtype=np.int64)
+        res = factorize(right, sort=sort, return_count=return_count)
+        return ((lkey,) + res) if isinstance(res, tuple) else (lkey, res)
+    elif len(right) == 0:
+        rkey = np.empty(0, dtype=np.int64)
+        res = factorize(left, sort=sort, return_count=return_count)
+        return (res[0], rkey, res[1]) if return_count else (res, rkey)
+    else:
+        if isinstance(left, pd.DataFrame):
+            if isinstance(right, pd.DataFrame):
+                if left.shape[1] != right.shape[1]:
+                    raise ValueError(
+                        "left and right must have the same number of columns,"
+                        f" but got {left.shape[1]} and {right.shape[1]}"
+                    )
+                mapped = (
+                    factorize(s, r, sort=sort, return_count=True) for (_, s), (_, r) in zip(left.items(), right.items())
+                )
+                zipped = zip(*mapped)
+                lcodes, rcodes, shape = (list(x) for x in zipped)
+                shape = tuple(shape)
+            elif isinstance(right, pd.MultiIndex):
+                if left.shape[1] != right.nlevels:
+                    raise ValueError(
+                        "left and right must have the same number of columns/levels,"
+                        f" but got {left.shape[1]} and {right.nlevels}"
+                    )
+                lcodes, rcodes, shape = _factorize_df_multiindex(left, right, sort, False)
+            else:
+                raise ValueError(
+                    f"if left is a DataFrame, right must be a DataFrame or MultiIndex, but got {type(right)}"
+                )
+
+            # get flat i8 join keys
+            lkey, rkey = pd.core.reshape.merge._get_join_keys(lcodes, rcodes, shape, sort)
+            return (lkey, rkey, len(np.union1d(lkey, rkey))) if return_count else (lkey, rkey)
+        elif isinstance(left, pd.MultiIndex):
+            if isinstance(right, pd.DataFrame):
+                if left.nlevels != right.shape[1]:
+                    raise ValueError(
+                        "left and right must have the same number of columns/levels,"
+                        f" but got {left.nlevels} and {right.shape[1]}"
+                    )
+                lcodes, rcodes, shape = _factorize_df_multiindex(right, left, sort, True)
+            elif isinstance(right, pd.MultiIndex):
+                if left.nlevels != right.nlevels:
+                    raise ValueError(
+                        "left and right must have the same number of levels,"
+                        f" but got {left.nlevels} and {right.nlevels}"
+                    )
+                mapped = (
+                    factorize(left.levels[i]._values, right.levels[i]._values, sort=sort, return_count=True)
+                    for i in range(left.nlevels)
+                )
+                zipped = zip(*mapped)
+                lcodes, rcodes, shape = (list(x) for x in zipped)
+                lcodes = list(map(np.take, lcodes, left.codes))
+                rcodes = list(map(np.take, rcodes, right.codes))
+
+                # fix labels if there were any nulls
+                for i in range(left.nlevels):
+                    lmask = left.codes[i] == -1
+                    rmask = right.codes[i] == -1
+                    lany = lmask.any()
+                    rany = rmask.any()
+                    if lany or rany:
+                        if lany:
+                            lcodes[i][lmask] = shape[i]
+                        if rany:
+                            rcodes[i][rmask] = shape[i]
+                        shape[i] += 1
+
+                shape = tuple(shape)
+            else:
+                raise ValueError(
+                    f"if left is a MultiIndex, right must be a DataFrame or MultiIndex, but got {type(right)}"
+                )
+
+            # get flat i8 join keys
+            lkey, rkey = pd.core.reshape.merge._get_join_keys(lcodes, rcodes, shape, sort)
+            return (lkey, rkey, len(np.union1d(lkey, rkey))) if return_count else (lkey, rkey)
+        else:
+            if isinstance(right, pd.DataFrame) or isinstance(right, pd.MultiIndex):
+                raise ValueError(f"if left is an array, right must be an array, too, but got {type(right)}")
+            else:
+                res = pd.core.reshape.merge._factorize_keys(left, right, sort=sort)
+                return res if return_count else res[:2]
+
+
 def _parse_column_specs(df: Union[pd.DataFrame, "dask.dataframe.DataFrame"], spec) -> list:  # noqa F821
     if isinstance(spec, (tuple, str, int, np.ndarray, pd.Series)):
         spec = [spec]
@@ -992,3 +1190,35 @@ def _parse_column_specs(df: Union[pd.DataFrame, "dask.dataframe.DataFrame"], spe
         out.append(s)
 
     return out
+
+
+def _factorize_df_multiindex(
+    df: pd.DataFrame, index: pd.MultiIndex, sort: bool, swap: bool
+) -> tuple[np.ndarray, np.ndarray, tuple]:
+    mapped = (
+        factorize(np.asarray(index.levels[i]._values), s.values, sort=sort, return_count=True)
+        for i, (_, s) in enumerate(df.items())
+    )
+    zipped = zip(*mapped)
+    rcodes, lcodes, shape = (list(x) for x in zipped)
+    if sort and not swap:
+        rcodes = list(map(np.take, rcodes, index.codes))
+    else:
+        rcodes = [a.astype("i8", subok=False, copy=True) for a in index.codes]
+
+    # fix right labels if there were any nulls
+    for i, (_, s) in enumerate(df.items()):
+        mask = index.codes[i] == -1
+        if mask.any():
+            # check if there already was any nulls at this location
+            # if there was, it is factorized to `shape[i] - 1`
+            a = s.values[lcodes[i] == shape[i] - 1]
+            if a.size == 0 or not a[0] != a[0]:
+                shape[i] += 1
+
+            rcodes[i][mask] = shape[i] - 1
+
+    if swap:
+        lcodes, rcodes = rcodes, lcodes
+
+    return lcodes, rcodes, tuple(shape)

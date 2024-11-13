@@ -3,6 +3,7 @@
 
 from .misc import (
     combine_intervals,
+    factorize,
     find_containing_interval,
     group_intervals,
     grouped_mode,
@@ -25,4 +26,5 @@ __all__ = [
     "combine_intervals",
     "find_containing_interval",
     "impute",
+    "factorize",
 ]
