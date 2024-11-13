@@ -746,7 +746,7 @@ def partition_series(s: pd.Series, n, shuffle: bool = True) -> pd.Series:
 def impute(
     df: pd.DataFrame,
     method: str = "ffill",
-    group_by: Union[int, str, None] = None,
+    group_by: Union[int, str, pd.Series, pd.Index, np.ndarray, None] = None,
     limit: Optional[int] = None,
     inplace: bool = False,
 ) -> pd.DataFrame:
@@ -766,8 +766,9 @@ def impute(
             fewer rows, "lfill" is equivalent to "afill",
         * "linear": linear interpolation; note that no extrapolation happens, and also note that row index values are
             completely ignored.
-    group_by : str | int, optional
+    group_by : str | int | pd.Series | pd.Index | array, optional
         Column or index to group by. Integers are interpreted as row index levels, strings as column names.
+        Series and arrays may be provided as well; this could be the result of function `factorize()`, for instance.
     limit : int, optional
         Imputation limit, applies to both forward/backward filling and linear interpolation.
     inplace : bool, default=False
@@ -785,7 +786,7 @@ def impute(
         df.fillna(df0, inplace=True)
         df0.fillna(df, inplace=True)
 
-        if isinstance(group_by, int):
+        if isinstance(group_by, (int, np.integer, pd.Series, pd.Index, np.ndarray)):
             columns = list(df.columns)
         else:
             columns = [c for c in df.columns if c != group_by]
@@ -820,9 +821,25 @@ def impute(
     else:
         raise ValueError('`method` must be "ffill", "bfill", "afill", "lfill" or "linear".')
 
-    if isinstance(group_by, int):
+    if isinstance(group_by, (int, np.integer)):
         columns = list(df.columns)
         group_values = df.index.get_level_values(group_by)
+    elif isinstance(group_by, pd.Series):
+        columns = list(df.columns)
+        if len(group_by) != len(df) or not (group_by.index == df.index).all():
+            group_by = group_by.reindex(df.index)
+        group_values = group_by.values
+    elif isinstance(group_by, pd.Index):
+        if isinstance(group_by, pd.MultiIndex):
+            raise ValueError("Multiindex is not supported")
+        elif len(group_by) != len(df):
+            raise ValueError("Grouper and axis must be same length")
+        columns = list(df.columns)
+        group_values = group_by.get_level_values(0)
+    elif isinstance(group_by, np.ndarray):
+        if len(group_by) != len(df):
+            raise ValueError("Grouper and axis must be same length")
+        columns = list(df.columns)
     else:
         columns = [c for c in df.columns if c != group_by]
         group_values = df[group_by].values
@@ -871,12 +888,12 @@ def impute(
     # slow version
     if method == "linear":
         df[columns] = (
-            df[columns].groupby(group_values).apply(lambda g: g.interpolate(method=method, axis=0, limit=limit))
+            df[columns].groupby(group_values).transform(lambda g: g.interpolate(method=method, axis=0, limit=limit))
         )
     elif method == "ffill":
-        df[columns] = df[columns].groupby(group_values).ffill(axis=0, limit=limit)
+        df[columns] = df[columns].groupby(group_values).ffill(limit=limit)
     else:
-        df[columns] = df[columns].groupby(group_values).bfill(axis=0, limit=limit)
+        df[columns] = df[columns].groupby(group_values).bfill(limit=limit)
 
     return df
 
@@ -985,9 +1002,9 @@ def factorize(
 
     Parameters
     ----------
-    left : pd.DataFrame or pd.Series or pd.Index or array
+    left : pd.DataFrame | pd.Series | pd.Index | array
         First object to factorize.
-    right : pd.DataFrame or pd.Series or pd.Index or array, optional
+    right : pd.DataFrame | pd.Series | pd.Index | array, optional
         Second object to factorize alongside `left`, optional. If given, matching rows in `left` and `right` are mapped
         to the same key, and distinct rows to distinct keys.
         The type of `right` does not need to be the same as the type of `left`, but if `left` has multiple
