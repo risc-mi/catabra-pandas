@@ -1,10 +1,505 @@
 #  Copyright (c) 2024. RISC Software GmbH.
 #  All rights reserved.
 
-from typing import Any, List, Optional, Tuple
+import warnings
+from typing import Any, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
+
+from .misc import factorize
+
+
+def merge_intervals(
+    left: pd.DataFrame,
+    right: pd.DataFrame,
+    on=None,
+    left_on=None,
+    right_on=None,
+    left_index=None,
+    right_index=None,
+    how: str = "left",
+    left_start: Optional[str] = None,
+    left_stop: Optional[str] = None,
+    right_start: Optional[str] = None,
+    right_stop: Optional[str] = None,
+    include_left_start: bool = True,
+    include_left_stop: bool = True,
+    include_right_start: bool = True,
+    include_right_stop: bool = True,
+    suffixes: tuple = ("_x", "_y"),
+    copy: Optional[bool] = None,
+    return_indexers: bool = False,
+) -> Union[pd.DataFrame, np.ndarray]:
+    """Join columns of two DataFrames based on interval overlaps.
+
+    Parameters
+    ----------
+    left : pd.DataFrame
+        First DataFrame to consider. Must have columns `left_start`, `left_stop` and `on`, if specified.
+    right : pd.DataFrame | list of pd.DataFrame
+        Other DataFrame(s) to consider. Must have columns `right_start`, `right_stop` and `on`, if specified.
+    on : list of str, optional
+        List of columns on which to join, in addition to intervals.
+        Mutually exclusive with `left_on`, `right_on`, `left_index` and `right_index`.
+    left_on : list of str, optional
+        List of columns in `left` on which to join, in addition to intervals.
+        Mutually exclusive with `on` and `left_index`.
+    right_on : list of str, optional
+        List of columns in `right` on which to join, in addition to intervals.
+        Mutually exclusive with `on` and `right_index`.
+    left_index : list | True, optional
+        List of index levels in `left` on which to join, in addition to intervals, or True to join on all levels.
+        Mutually exclusive with `on` and `left_on`.
+    right_index : list | True, optional
+        List of index levels in `right` on which to join, in addition to intervals, or True to join on all levels.
+        Mutually exclusive with `on` and `right_on`.
+    how : str, default="left"
+        How to handle the operation of the two objects:
+        * "inner": The result contains a row for all combinations of rows in `left` and `right` with non-empty
+            intersection. The order of rows and their row index corresponds to that of `left`.
+        * "left": Like "inner", but add all rows in `left` that would be missing.
+        * "right": Like "left", but with `left` and `right` swapped. Note that this not only affects the order of rows,
+            but also the order of columns in the result.
+        * "outer": Like "inner", but add all rows in `left` and `right` that would be missing.
+    left_start : str, optional
+        Name of the column in `left` that contains left interval endpoints. If None, the intervals do not have a left
+        endpoint. If equal to `left_stop`, the intervals are treated as isolated points instead.
+    left_stop : str, optional
+        Name of the column in `left` that contains right interval endpoints. If None, the intervals do not have a right
+        endpoint.
+    right_start : str, optional
+        Name of the column in `right` that contains left interval endpoints. If None, the intervals do not have a left
+        endpoint. If equal to `right_stop`, the intervals are treated as isolated points instead.
+    right_stop : str, optional
+        Name of the column in `right` that contains right interval endpoints. If None, the intervals do not have a
+        right endpoint.
+    include_left_start : bool, default=True
+        Include left interval endpoints of `left`. Ignored if `left_start` is None.
+    include_left_stop : bool, default=True
+        Include right interval endpoints of `left`. Ignored if `left_stop` is None.
+    include_right_start : bool, default=True
+        Include left interval endpoints of `right`. Ignored if `right_start` is None.
+    include_right_stop : bool, default=True
+        Include right interval endpoints of `right`. Ignored if `right_stop` is None.
+    suffixes : (str, str), default=("_x", "_y")
+        A length-2 sequence where each element is optionally a string indicating the suffix to add to overlapping
+        column names in `left` and `right` respectively. Pass a value of None to indicate that the column name from
+        `left` or `right` should be left as-is, with no suffix. At least one of the values must not be None.
+        Ignored if `return_indexer` is True.
+    copy : bool, optional
+        If False, avoid copy if possible. Ignored if `return_indexers` is True.
+    return_indexers : bool, default=False
+        Return indexers instead of the join of `left` and `right`.
+
+    Returns
+    -------
+    pd.DataFrame | array
+        If `return_indexers` is False: the join of `left` and `right`. In contrast to `pd.merge()`, the result always
+        has a fresh RangeIndex, even when setting `left_index` or `right_index` to True.
+        If `return_indexers` is True: array of shape `(2, N)` that describe which rows of `left` to combine with which
+        rows of `right` (`iloc`-indices). -1 refers to missing rows, if `how` is not "inner".
+
+    Notes
+    -----
+    Interval data types can be arbitrary, as long as they match between `left` and `right` and support sorting with
+    `np.argsort` and `np.lexsort`. It is important to note that an interval is defined as the set of all points greater
+    than (or equal) to the left endpoint, and less than (or equal) to the right endpoint, assuming a continuum as the
+    underlying set from which points can be drawn. Hence, any interval whose left endpoint is strictly less than its
+    right endpoint is automatically non-empty. For instance, the interval `(0, 1)` with integer endpoints is non-empty,
+    even though it does not contain any integers.
+
+    Intervals in `left` and `right` may be empty (i.e., have larger left- than right endpoint) or infinite. Such
+    intervals are handled correctly by this function. However, the behavior of this function is undefined if there are
+    intervals of the form `(-inf, -inf)` or `(+inf, +inf)`, either explicitly or implicitly by setting some of
+    `left_start` etc. to None.
+
+    The order of rows in the result follows their order in `left` (or `right` if `how` is set to "right"). If `how` is
+    "left", missing rows are inserted once at their original positions. If `how` is "outer", missing rows from left are
+    inserted at their original positions, and then missing rows from `right` are inserted at the end. This deviates
+    from `pd.merge()`, because intervals do not possess a natural sorting order: they could be sorted lexicographically,
+    reverse-lexicographically, by size, etc.
+    """
+
+    if how == "right":
+        indexers = merge_intervals(
+            right,
+            left,
+            how="left",
+            on=on,
+            left_on=right_on,
+            right_on=left_on,
+            left_index=right_index,
+            right_index=left_index,
+            left_start=right_start,
+            left_stop=right_stop,
+            right_start=left_start,
+            right_stop=left_stop,
+            include_left_start=include_right_start,
+            include_left_stop=include_right_stop,
+            include_right_start=include_left_start,
+            include_right_stop=include_left_stop,
+            return_indexers=True,
+        )[::-1]
+
+        if return_indexers:
+            return indexers
+        else:
+            return _reindex_and_concat(left, right, indexers, suffixes, copy)
+
+    if how not in ("left", "outer", "inner"):
+        raise ValueError(f'`how` must be one of "left", "right", "outer" or "inner", but got "{how}"')
+
+    if on is None:
+        if left_on is None:
+            if left_index is None:
+                left_on = []
+                left_index = False
+            elif left_index is True:
+                left_on = list(range(left.index.nlevels))
+            elif isinstance(left_index, int):
+                left_on = [left_index]
+                left_index = True
+            elif isinstance(left_index, list):
+                left_on = left_index
+                left_index = True
+            else:
+                raise ValueError(f"`left_index` must be None, an integer or a list, but got {type(left_index)}")
+        else:
+            if left_index is not None:
+                raise ValueError("Can only pass argument `left_on` OR `left_index`, not both.")
+            elif not isinstance(left_on, list):
+                left_on = [left_on]
+            left_index = False
+        if right_on is None:
+            if right_index is None:
+                right_on = []
+                right_index = False
+            elif right_index is True:
+                right_on = list(range(right.index.nlevels))
+            elif isinstance(right_index, int):
+                right_on = [right_index]
+                right_index = True
+            elif isinstance(right_index, list):
+                right_on = right_index
+                right_index = True
+            else:
+                raise ValueError(f"`right_index` must be None, an integer or a list, but got {type(right_index)}")
+        else:
+            if right_index is not None:
+                raise ValueError("Can only pass argument `right_on` OR `right_index`, not both.")
+            elif not isinstance(right_on, list):
+                right_on = [right_on]
+            right_index = False
+        if len(left_on) != len(right_on):
+            raise ValueError(
+                f"`left_on` and `right_on` must have the same length, but got {len(left_on)} and {len(right_on)}"
+            )
+    else:
+        if left_on is not None or right_on is not None:
+            raise ValueError("Can only pass argument `on` OR `left_on` and `right_on`, not a combination of both.")
+        elif left_index is not None or right_index is not None:
+            raise ValueError(
+                "Can only pass argument `on` OR `left_index` and `right_index`, not a combination of both."
+            )
+        elif not isinstance(on, list):
+            on = [on]
+        left_on = right_on = on
+        left_index = right_index = False
+
+    # reset the row index; makes everything a lot easier
+    left_orig = left
+    right_orig = right
+    left = left.reset_index(drop=True, inplace=False)
+    right = right.reset_index(drop=True, inplace=False)
+
+    # get rid of empty intervals
+    if left_start is not None and left_stop is not None:
+        if left_start == left_stop:
+            if not include_left_start or not include_left_stop:
+                warnings.warn(
+                    "If `left` is meant to be joined on isolated points, `include_left_start` and `include_left_stop` should be True."
+                )
+                left = left.iloc[:0]
+        else:
+            mask = (
+                left[left_start] <= left[left_stop]
+                if include_left_start and include_left_stop
+                else left[left_start] < left[left_stop]
+            )
+            if not mask.all():
+                left = left[mask]
+    if right_start is not None and right_stop is not None:
+        if right_start == right_stop:
+            if not include_right_start or not include_right_stop:
+                warnings.warn(
+                    "If `right` is meant to be joined on isolated points, `include_right_start` and `include_right_stop` should be True."
+                )
+                right = right.iloc[:0]
+        else:
+            mask = (
+                right[right_start] <= right[right_stop]
+                if include_right_start and include_right_stop
+                else right[right_start] < right[right_stop]
+            )
+            if not mask.all():
+                right = right[mask]
+
+    if len(left_on):
+        if left_index:
+            lfactor = left_orig.index[left.index]
+            drop = list(set(range(lfactor.nlevels)).difference(left_on))
+            if drop:
+                lfactor = lfactor.droplevel(drop)
+            left_on = np.argsort(left_on)
+            if not (left_on[:-1] < left_on[1:]).all():
+                lfactor = lfactor.reorder_levels(left_on)
+        else:
+            lfactor = left[left_on]
+        if right_index:
+            rfactor = right_orig.index[right.index]
+            drop = list(set(range(rfactor.nlevels)).difference(right_on))
+            if drop:
+                rfactor = rfactor.droplevel(drop)
+            right_on = np.argsort(right_on)
+            if not (right_on[:-1] < right_on[1:]).all():
+                rfactor = rfactor.reorder_levels(right_on)
+        else:
+            rfactor = right[right_on]
+
+        left_on, right_on = factorize(lfactor, right=rfactor, sort=False, return_count=False)
+
+        # restrict to intersection wrt. equality constraints
+        mask = np.isin(left_on, right_on)
+        if not mask.all():
+            left = left[mask]
+            left_on = left_on[mask]
+
+        mask = np.isin(right_on, left_on)
+        if not mask.all():
+            right = right[mask]
+            right_on = right_on[mask]
+    else:
+        left_on = right_on = None
+
+    if (
+        (left_start is None and left_stop is None)
+        or (right_start is None and right_stop is None)
+        or (left_start is None and right_start is None)
+        or (left_stop is None and right_stop is None)
+    ):
+        if left_on is None:
+            # cross join => not allowed
+            raise ValueError("No columns to perform merge on.")
+        else:
+            # standard equi-join on `left_on` and `right_on`
+            indexer = _get_equi_join_indexers([left_on], [right_on])
+    elif left_start == left_stop and right_start == right_stop:
+        if left_on is None:
+            # standard equi-join on `left_start` and `right_start`
+            indexer = _get_equi_join_indexers([left[left_start].values], [right[right_start].values])
+        else:
+            # standard equi-join on `[left_on, left_start]` and `[right_on, right_start]`
+            indexer = _get_equi_join_indexers([left_on, left[left_start].values], [right_on, right[right_start].values])
+    else:
+        if right_start is None or right_stop is None or left_start == left_stop:
+            # left start points contained in right intervals
+
+            left_col = left_stop if right_stop is None else left_start
+
+            if right_on is not None:
+                sorter = np.argsort(right_on)
+                right = right.iloc[sorter]
+                right_on = right_on[sorter]
+
+            sorter = _grouped_lexsort(left, left_on, [left_col], return_indexer=True, validate_groups=True)
+            left = left.iloc[sorter]
+            if left_on is not None:
+                left_on = left_on[sorter]
+
+            spec = _find_contained_points(
+                right,
+                left[left_col],
+                right_on,
+                left_on,
+                [(right_start, include_right_start, right_stop, include_right_stop)],
+            )
+            indexer = _explode(spec[0], left.index)[::-1]  # this is the "inner" indexer
+        elif left_start is None or left_stop is None or right_start == right_stop:
+            # right start points contained in left intervals
+
+            right_col = right_stop if left_stop is None else right_start
+
+            if left_on is not None:
+                sorter = np.argsort(left_on)
+                left = left.iloc[sorter]
+                left_on = left_on[sorter]
+
+            sorter = _grouped_lexsort(right, right_on, [right_col], return_indexer=True, validate_groups=True)
+            right = right.iloc[sorter]
+            if right_on is not None:
+                right_on = right_on[sorter]
+
+            spec = _find_contained_points(
+                left,
+                right[right_col],
+                left_on,
+                right_on,
+                [(left_start, include_left_start, left_stop, include_left_stop)],
+            )
+            indexer = _explode(spec[0], right.index)  # this is the "inner" indexer
+        else:
+            # proper interval overlaps
+
+            # let L be one of [, (, and R be one of ], )
+            # two *non-empty* intervals La, bR, Lc, dR are overlapping iff
+            #
+            #       LR   LR        disj 1    OR    disj 2
+            #  0    ()   ()     a in [c, d)     c in (a, b)
+            #  1    ()   (]     a in [c, d)     c in (a, b)
+            #  2    ()   [)     a in [c, d)     c in (a, b)
+            #  3    ()   []     a in [c, d)     c in (a, b)
+            #  4    (]   ()     a in [c, d)     c in (a, b)
+            #  5    (]   (]     a in [c, d)     c in (a, b)
+            #  6    (]   [)     a in [c, d)     c in (a, b]
+            #  7    (]   []     a in [c, d)     c in (a, b]
+            #  8    [)   ()     a in (c, d)     c in [a, b)
+            #  9    [)   (]     a in (c, d]     c in [a, b)
+            # 10    [)   [)     a in (c, d)     c in [a, b)
+            # 11    [)   []     a in (c, d]     c in [a, b)
+            # 12    []   ()     a in (c, d)     c in [a, b)
+            # 13    []   (]     a in (c, d]     c in [a, b)
+            # 14    []   [)     a in (c, d)     c in [a, b]
+            # 15    []   []     a in (c, d]     c in [a, b]
+            #
+            # note that disj1 and disj2 are always mutually exclusive
+
+            # sort `left` by `left_on` and `left_start` (a)
+            sorter = _grouped_lexsort(left, left_on, [left_start], return_indexer=True, validate_groups=True)
+            left = left.iloc[sorter]
+            if left_on is not None:
+                left_on = left_on[sorter]
+
+            # sort `right` by `right_on` and `right_start` (c)
+            sorter = _grouped_lexsort(right, right_on, [right_start], return_indexer=True, validate_groups=True)
+            right = right.iloc[sorter]
+            if right_on is not None:
+                right_on = right_on[sorter]
+
+            # a in Lc, dR
+            spec = _find_contained_points(
+                right,
+                left[left_start],
+                right_on,
+                left_on,
+                [(right_start, not include_left_start, right_stop, include_left_start and include_right_stop)],
+            )
+            indexer_a = _explode(spec[0], left.index)[::-1]  # this is the "inner" indexer of a in Lc, dR
+
+            # c in La, bR
+            spec = _find_contained_points(
+                left,
+                right[right_start],
+                left_on,
+                right_on,
+                [(left_start, include_left_start, left_stop, include_left_stop and include_right_start)],
+            )
+            indexer_c = _explode(spec[0], right.index)  # this is the "inner" indexer of c in La, bR
+
+            # `indexer_a` and `indexer_c` are pairwise disjoint, so we can simply concatenate them
+            indexer = np.concatenate([indexer_a, indexer_c], axis=1)  # this is the "inner" indexer
+
+    indexer = _finalize_indexers(indexer, len(left_orig), len(right_orig), how)
+
+    if return_indexers:
+        return indexer
+    else:
+        return _reindex_and_concat(left_orig, right_orig, indexer, suffixes, copy)
+
+
+def _explode(row_spec: pd.DataFrame, indexer: Optional[np.ndarray] = None) -> np.ndarray:
+    n = row_spec["last"] - row_spec["first"] + 1
+    out = np.empty((2, n.sum()), dtype=row_spec["last"].dtype)
+    out[0] = np.repeat(row_spec.index, n)
+    cs = np.roll(np.cumsum(n.values), 1)
+    cs[:1] = 0
+    out[1] = np.repeat(row_spec["first"].values, n) + np.arange(out.shape[1], dtype=out.dtype) - np.repeat(cs, n)
+    if indexer is not None:
+        np.take(np.asarray(indexer, out.dtype), out[1], out=out[1])
+
+    return out
+
+
+def _get_equi_join_indexers(left_keys: List[np.ndarray], right_keys: List[np.ndarray]) -> np.ndarray:
+    lidx, ridx = pd.core.reshape.merge.get_join_indexers(left_keys, right_keys, sort=False, how="inner")
+    if lidx is None:
+        if ridx is None:
+            return np.tile(np.arange(len(left_keys[0])), 2).reshape(2, -1)
+        else:
+            return np.stack([np.arange(len(ridx), dtype=ridx.dtype), np.asarray(ridx)], axis=0)
+    else:
+        if ridx is None:
+            return np.stack([np.asarray(lidx), np.arange(len(lidx), dtype=lidx.dtype)], axis=0)
+        else:
+            return np.stack([np.asarray(lidx), np.asarray(ridx)], axis=0)
+
+
+def _finalize_indexers(indexers: np.ndarray, left_len: int, right_len: int, how: str) -> np.ndarray:
+    # `how` cannot be "right"!
+
+    # sort `indexers`
+    sorter = _grouped_lexsort(
+        pd.Series(indexers[1]).to_frame("__tmp__"),
+        indexers[0],
+        ["__tmp__"],
+        return_indexer=True,
+        validate_groups=True,
+    )
+    indexers = indexers[:, sorter]
+
+    if how == "outer":
+        missing_right = np.setdiff1d(np.arange(right_len), indexers[1])
+    else:
+        missing_right = []
+
+    if how in ("left", "outer"):
+        # add missing rows from left
+        missing = np.setdiff1d(np.arange(left_len), indexers[0])
+        if len(missing):
+            loc = np.searchsorted(indexers[0], missing)
+            missing = np.stack(
+                [
+                    missing,
+                ],
+                axis=0,
+            )
+            indexers = np.insert(indexers, loc, missing, axis=1)
+
+    if len(missing_right):
+        # add missing rows from right
+        tmp = np.empty((2, indexers.shape[1] + len(missing_right)), dtype=indexers.dtype)
+        tmp[:, : indexers.shape[1]] = indexers
+        tmp[0, indexers.shape[1] :] = -1
+        tmp[1, indexers.shape[1] :] = missing_right
+
+    return indexers
+
+
+def _reindex_and_concat(left: pd.DataFrame, right: pd.DataFrame, indexers: np.ndarray, suffixes, copy) -> pd.DataFrame:
+    left = left.reset_index(drop=True, inplace=False)
+    right = right.reset_index(drop=True, inplace=False)
+
+    left = left.reindex(indexers[0])
+    right = right.reindex(indexers[1])
+
+    left.reset_index(drop=True, inplace=True)
+    right.reset_index(drop=True, inplace=True)
+
+    llabels, rlabels = pd.core.reshape.merge._items_overlap_with_suffix(left.columns, right.columns, suffixes)
+    left.columns = llabels
+    right.columns = rlabels
+
+    return pd.concat([left, right], axis=1, copy=copy)
 
 
 def _find_contained_points(

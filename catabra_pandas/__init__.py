@@ -1,6 +1,7 @@
 #  Copyright (c) 2024. RISC Software GmbH.
 #  All rights reserved.
 
+from .merging import merge_intervals
 from .misc import (
     combine_intervals,
     factorize,
@@ -27,4 +28,5 @@ __all__ = [
     "find_containing_interval",
     "impute",
     "factorize",
+    "merge_intervals",
 ]
