@@ -16,8 +16,8 @@ def merge_intervals(
     on=None,
     left_on=None,
     right_on=None,
-    left_index=None,
-    right_index=None,
+    left_index=False,
+    right_index=False,
     how: str = "left",
     left_start: Optional[str] = None,
     left_stop: Optional[str] = None,
@@ -48,19 +48,19 @@ def merge_intervals(
     right_on : list of str, optional
         List of columns in `right` on which to join, in addition to intervals.
         Mutually exclusive with `on` and `right_index`.
-    left_index : list | True, optional
+    left_index : list | bool
         List of index levels in `left` on which to join, in addition to intervals, or True to join on all levels.
         Mutually exclusive with `on` and `left_on`.
-    right_index : list | True, optional
+    right_index : list | bool
         List of index levels in `right` on which to join, in addition to intervals, or True to join on all levels.
         Mutually exclusive with `on` and `right_on`.
     how : str, default="left"
         How to handle the operation of the two objects:
         * "inner": The result contains a row for all combinations of rows in `left` and `right` with non-empty
-            intersection. The order of rows and their row index corresponds to that of `left`.
+            intersection. The order of rows corresponds to that of `left`.
         * "left": Like "inner", but add all rows in `left` that would be missing.
-        * "right": Like "left", but with `left` and `right` swapped. Note that this not only affects the order of rows,
-            but also the order of columns in the result.
+        * "right": Like "left", but with `left` and `right` swapped. Note that this only affects the order of rows,
+            not the order of columns in the result.
         * "outer": Like "inner", but add all rows in `left` and `right` that would be missing.
     left_start : str, optional
         Name of the column in `left` that contains left interval endpoints. If None, the intervals do not have a left
@@ -102,6 +102,8 @@ def merge_intervals(
 
     Notes
     -----
+
+    Data types:
     Interval data types can be arbitrary, as long as they match between `left` and `right` and support sorting with
     `np.argsort` and `np.lexsort`. It is important to note that an interval is defined as the set of all points greater
     than (or equal) to the left endpoint, and less than (or equal) to the right endpoint, assuming a continuum as the
@@ -109,11 +111,16 @@ def merge_intervals(
     right endpoint is automatically non-empty. For instance, the interval `(0, 1)` with integer endpoints is non-empty,
     even though it does not contain any integers.
 
+    Empty and infinite intervals:
     Intervals in `left` and `right` may be empty (i.e., have larger left- than right endpoint) or infinite. Such
     intervals are handled correctly by this function. However, the behavior of this function is undefined if there are
     intervals of the form `(-inf, -inf)` or `(+inf, +inf)`, either explicitly or implicitly by setting some of
     `left_start` etc. to None.
 
+    NaN interval endpoints:
+    Intervals with NaN endpoints are _always_ treated like empty intervals, even if the other endpoint is +/-inf.
+
+    Order of rows:
     The order of rows in the result follows their order in `left` (or `right` if `how` is set to "right"). If `how` is
     "left", missing rows are inserted once at their original positions. If `how` is "outer", missing rows from left are
     inserted at their original positions, and then missing rows from `right` are inserted at the end. This deviates
@@ -152,9 +159,8 @@ def merge_intervals(
 
     if on is None:
         if left_on is None:
-            if left_index is None:
+            if left_index is False:
                 left_on = []
-                left_index = False
             elif left_index is True:
                 left_on = list(range(left.index.nlevels))
             elif isinstance(left_index, int):
@@ -164,17 +170,15 @@ def merge_intervals(
                 left_on = left_index
                 left_index = True
             else:
-                raise ValueError(f"`left_index` must be None, an integer or a list, but got {type(left_index)}")
+                raise ValueError(f"`left_index` must be bool, integer or list, but got {type(left_index)}")
         else:
-            if left_index is not None:
+            if left_index is not False:
                 raise ValueError("Can only pass argument `left_on` OR `left_index`, not both.")
             elif not isinstance(left_on, list):
                 left_on = [left_on]
-            left_index = False
         if right_on is None:
-            if right_index is None:
+            if right_index is False:
                 right_on = []
-                right_index = False
             elif right_index is True:
                 right_on = list(range(right.index.nlevels))
             elif isinstance(right_index, int):
@@ -184,13 +188,12 @@ def merge_intervals(
                 right_on = right_index
                 right_index = True
             else:
-                raise ValueError(f"`right_index` must be None, an integer or a list, but got {type(right_index)}")
+                raise ValueError(f"`right_index` must be bool, integer or list, but got {type(right_index)}")
         else:
-            if right_index is not None:
+            if right_index is not False:
                 raise ValueError("Can only pass argument `right_on` OR `right_index`, not both.")
             elif not isinstance(right_on, list):
                 right_on = [right_on]
-            right_index = False
         if len(left_on) != len(right_on):
             raise ValueError(
                 f"`left_on` and `right_on` must have the same length, but got {len(left_on)} and {len(right_on)}"
@@ -198,14 +201,13 @@ def merge_intervals(
     else:
         if left_on is not None or right_on is not None:
             raise ValueError("Can only pass argument `on` OR `left_on` and `right_on`, not a combination of both.")
-        elif left_index is not None or right_index is not None:
+        elif left_index is not False or right_index is not False:
             raise ValueError(
                 "Can only pass argument `on` OR `left_index` and `right_index`, not a combination of both."
             )
         elif not isinstance(on, list):
             on = [on]
         left_on = right_on = on
-        left_index = right_index = False
 
     # reset the row index; makes everything a lot easier
     left_orig = left
@@ -214,36 +216,64 @@ def merge_intervals(
     right = right.reset_index(drop=True, inplace=False)
 
     # get rid of empty intervals
-    if left_start is not None and left_stop is not None:
-        if left_start == left_stop:
-            if not include_left_start or not include_left_stop:
-                warnings.warn(
-                    "If `left` is meant to be joined on isolated points, `include_left_start` and `include_left_stop` should be True."
-                )
-                left = left.iloc[:0]
-        else:
-            mask = (
-                left[left_start] <= left[left_stop]
-                if include_left_start and include_left_stop
-                else left[left_start] < left[left_stop]
-            )
+    if left_start is None:
+        if left_stop is not None:
+            mask = left[left_stop].notna()
             if not mask.all():
                 left = left[mask]
-    if right_start is not None and right_stop is not None:
-        if right_start == right_stop:
-            if not include_right_start or not include_right_stop:
-                warnings.warn(
-                    "If `right` is meant to be joined on isolated points, `include_right_start` and `include_right_stop` should be True."
-                )
-                right = right.iloc[:0]
+    elif left_stop is None:
+        mask = left[left_start].notna()
+        if not mask.all():
+            left = left[mask]
+    elif left_start == left_stop:
+        if include_left_start and include_left_stop:
+            mask = left[left_start].notna()
+            if not mask.all():
+                left = left[mask]
         else:
-            mask = (
-                right[right_start] <= right[right_stop]
-                if include_right_start and include_right_stop
-                else right[right_start] < right[right_stop]
+            warnings.warn(
+                "If `left` is meant to be joined on isolated points,"
+                " `include_left_start` and `include_left_stop` should be True."
             )
+            left = left.iloc[:0]
+    else:
+        # removes rows with NaN endpoints
+        mask = (
+            left[left_start] <= left[left_stop]
+            if include_left_start and include_left_stop
+            else left[left_start] < left[left_stop]
+        )
+        if not mask.all():
+            left = left[mask]
+    if right_start is None:
+        if right_stop is not None:
+            mask = right[right_stop].notna()
             if not mask.all():
                 right = right[mask]
+    elif right_stop is None:
+        mask = right[right_start].notna()
+        if not mask.all():
+            right = right[mask]
+    elif right_start == right_stop:
+        if include_right_start and include_right_stop:
+            mask = right[right_start].notna()
+            if not mask.all():
+                right = right[mask]
+        else:
+            warnings.warn(
+                "If `right` is meant to be joined on isolated points,"
+                " `include_right_start` and `include_right_stop` should be True."
+            )
+            right = right.iloc[:0]
+    else:
+        # removes rows with NaN endpoints
+        mask = (
+            right[right_start] <= right[right_stop]
+            if include_right_start and include_right_stop
+            else right[right_start] < right[right_stop]
+        )
+        if not mask.all():
+            right = right[mask]
 
     if len(left_on):
         if left_index:
@@ -293,14 +323,24 @@ def merge_intervals(
             raise ValueError("No columns to perform merge on.")
         else:
             # standard equi-join on `left_on` and `right_on`
-            indexer = _get_equi_join_indexers([left_on], [right_on])
+            indexer = _get_equi_join_indexers([left_on], [right_on], left_indexer=left.index, right_indexer=right.index)
     elif left_start == left_stop and right_start == right_stop:
         if left_on is None:
             # standard equi-join on `left_start` and `right_start`
-            indexer = _get_equi_join_indexers([left[left_start].values], [right[right_start].values])
+            indexer = _get_equi_join_indexers(
+                [left[left_start].values],
+                [right[right_start].values],
+                left_indexer=left.index,
+                right_indexer=right.index,
+            )
         else:
             # standard equi-join on `[left_on, left_start]` and `[right_on, right_start]`
-            indexer = _get_equi_join_indexers([left_on, left[left_start].values], [right_on, right[right_start].values])
+            indexer = _get_equi_join_indexers(
+                [left_on, left[left_start].values],
+                [right_on, right[right_start].values],
+                left_indexer=left.index,
+                right_indexer=right.index,
+            )
     else:
         if right_start is None or right_stop is None or left_start == left_stop:
             # left start points contained in right intervals
@@ -430,18 +470,33 @@ def _explode(row_spec: pd.DataFrame, indexer: Optional[np.ndarray] = None) -> np
     return out
 
 
-def _get_equi_join_indexers(left_keys: List[np.ndarray], right_keys: List[np.ndarray]) -> np.ndarray:
+def _get_equi_join_indexers(
+    left_keys: List[np.ndarray],
+    right_keys: List[np.ndarray],
+    left_indexer: Optional[np.ndarray] = None,
+    right_indexer: Optional[np.ndarray] = None,
+) -> np.ndarray:
     lidx, ridx = pd.core.reshape.merge.get_join_indexers(left_keys, right_keys, sort=False, how="inner")
     if lidx is None:
         if ridx is None:
-            return np.tile(np.arange(len(left_keys[0])), 2).reshape(2, -1)
+            lidx = np.arange(len(left_keys[0]))
+            ridx = lidx
         else:
-            return np.stack([np.arange(len(ridx), dtype=ridx.dtype), np.asarray(ridx)], axis=0)
+            lidx = np.arange(len(ridx), dtype=ridx.dtype)
+            ridx = np.asarray(ridx)
     else:
+        lidx = np.asarray(lidx)
         if ridx is None:
-            return np.stack([np.asarray(lidx), np.arange(len(lidx), dtype=lidx.dtype)], axis=0)
+            ridx = np.arange(len(lidx), dtype=lidx.dtype)
         else:
-            return np.stack([np.asarray(lidx), np.asarray(ridx)], axis=0)
+            ridx = np.asarray(ridx)
+
+    if left_indexer is not None:
+        np.take(np.asarray(left_indexer, lidx.dtype), lidx, out=lidx)
+    if right_indexer is not None:
+        np.take(np.asarray(right_indexer, ridx.dtype), ridx, out=ridx)
+
+    return np.stack([lidx, ridx], axis=0)
 
 
 def _finalize_indexers(indexers: np.ndarray, left_len: int, right_len: int, how: str) -> np.ndarray:
@@ -467,12 +522,7 @@ def _finalize_indexers(indexers: np.ndarray, left_len: int, right_len: int, how:
         missing = np.setdiff1d(np.arange(left_len), indexers[0])
         if len(missing):
             loc = np.searchsorted(indexers[0], missing)
-            missing = np.stack(
-                [
-                    missing,
-                ],
-                axis=0,
-            )
+            missing = np.stack([missing, -np.ones(len(missing), dtype=missing.dtype)], axis=0)
             indexers = np.insert(indexers, loc, missing, axis=1)
 
     if len(missing_right):
@@ -481,6 +531,7 @@ def _finalize_indexers(indexers: np.ndarray, left_len: int, right_len: int, how:
         tmp[:, : indexers.shape[1]] = indexers
         tmp[0, indexers.shape[1] :] = -1
         tmp[1, indexers.shape[1] :] = missing_right
+        indexers = tmp
 
     return indexers
 
