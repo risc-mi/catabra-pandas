@@ -1046,8 +1046,12 @@ def factorize(
 
     if isinstance(left, pd.Categorical):
         left = pd.Series(left)
+    elif isinstance(left, pd.DataFrame) and left.shape[1] == 1:
+        left = left.iloc[:, 0]
     if isinstance(right, pd.Categorical):
         right = pd.Series(right)
+    elif isinstance(right, pd.DataFrame) and right.shape[1] == 1:
+        right = right.iloc[:, 0]
 
     if isinstance(left, pd.Series):
         if left.dtype.name == "category":
