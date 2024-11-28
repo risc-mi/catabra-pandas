@@ -28,6 +28,7 @@ def merge_intervals(
     include_right_start: bool = True,
     include_right_stop: bool = True,
     suffixes: tuple = ("_x", "_y"),
+    keep_order: bool = True,
     copy: Optional[bool] = None,
     return_indexers: bool = False,
 ) -> Union[pd.DataFrame, np.ndarray]:
@@ -87,6 +88,10 @@ def merge_intervals(
         column names in `left` and `right` respectively. Pass a value of None to indicate that the column name from
         `left` or `right` should be left as-is, with no suffix. At least one of the values must not be None.
         Ignored if `return_indexer` is True.
+    keep_order : bool, default=True
+        Maintain the order of rows in `right` (or `left` if `how` is "right") in the result. That means, if a row in
+        `left` has multiple matching rows in `right`, their order is as in `right`.
+        Setting this parameter to False avoids some internal sorting, thereby increasing efficiency.
     copy : bool, optional
         If False, avoid copy if possible. Ignored if `return_indexers` is True.
     return_indexers : bool, default=False
@@ -121,11 +126,13 @@ def merge_intervals(
     Intervals with NaN endpoints are _always_ treated like empty intervals, even if the other endpoint is +/-inf.
 
     Order of rows:
-    The order of rows in the result follows their order in `left` (or `right` if `how` is set to "right"). If `how` is
-    "left", missing rows are inserted once at their original positions. If `how` is "outer", missing rows from left are
-    inserted at their original positions, and then missing rows from `right` are inserted at the end. This deviates
-    from `pd.merge()`, because intervals do not possess a natural sorting order: they could be sorted lexicographically,
-    reverse-lexicographically, by size, etc.
+    The order of rows in the result follows their order in `left` (or `right` if `how` is set to "right"). If a row in
+    `left` has multiple matching rows in `right`, their order is as in `right` if `keep_order` is True, and random
+    otherwise.
+    If `how` is "left", missing rows are inserted once at their original positions. If `how` is "outer", missing rows
+    from `left` are inserted at their original positions, and then missing rows from `right` are inserted at the end.
+    This deviates from `pd.merge()`, because intervals do not possess a natural sorting order: they could be sorted
+    lexicographically, reverse-lexicographically, by size, etc.
     """
 
     if how == "right":
@@ -146,6 +153,7 @@ def merge_intervals(
             include_left_stop=include_right_stop,
             include_right_start=include_left_start,
             include_right_stop=include_left_stop,
+            keep_order=keep_order,
             return_indexers=True,
         )[::-1]
 
@@ -312,6 +320,8 @@ def merge_intervals(
     else:
         left_on = right_on = None
 
+    # `left` and `right` still have their original order, i.e., strictly increasing row indexes
+    # some rows might have been removed, though
     if (
         (left_start is None and left_stop is None)
         or (right_start is None and right_stop is None)
@@ -342,33 +352,27 @@ def merge_intervals(
                 right_indexer=right.index,
             )
     else:
-        if right_start is None or right_stop is None or left_start == left_stop:
-            # left start points contained in right intervals
+        if (
+            left_start is None
+            or left_stop is None
+            or right_start is None
+            or right_stop is None
+            or right_start == right_stop
+        ):
+            # right endpoints contained in left intervals
 
-            left_col = left_stop if right_stop is None else left_start
+            if left_start == left_stop:
+                # we have either left_start \in (-inf, right_stop) or left_start \in (right_start, inf)
+                # the first is equivalent to right_stop \in (left_start, inf)
+                # the second is equivalent to right_start \in (-inf, left_stop)
+                if right_start is None:
+                    left_stop = None
+                    include_left_start = include_right_stop
+                else:
+                    left_start = None
+                    include_left_stop = include_right_start
 
-            if right_on is not None:
-                sorter = np.argsort(right_on)
-                right = right.iloc[sorter]
-                right_on = right_on[sorter]
-
-            sorter = _grouped_lexsort(left, left_on, [left_col], return_indexer=True, validate_groups=True)
-            left = left.iloc[sorter]
-            if left_on is not None:
-                left_on = left_on[sorter]
-
-            spec = _find_contained_points(
-                right,
-                left[left_col],
-                right_on,
-                left_on,
-                [(right_start, include_right_start, right_stop, include_right_stop)],
-            )
-            indexer = _explode(spec[0], left.index)[::-1]  # this is the "inner" indexer
-        elif left_start is None or left_stop is None or right_start == right_stop:
-            # right start points contained in left intervals
-
-            right_col = right_stop if left_stop is None else right_start
+            right_col = right_stop if left_stop is None or right_start is None else right_start
 
             if left_on is not None:
                 sorter = np.argsort(left_on)
@@ -387,7 +391,41 @@ def merge_intervals(
                 right_on,
                 [(left_start, include_left_start, left_stop, include_left_stop)],
             )
-            indexer = _explode(spec[0], right.index)  # this is the "inner" indexer
+            spec[0].sort_index(inplace=True)
+            indexer = _explode(spec[0], right.index)  # this is the "inner" indexer, first row is increasing
+        elif left_start == left_stop:
+            # left start points contained in right intervals
+
+            if right_on is not None:
+                sorter = np.argsort(right_on)
+                right = right.iloc[sorter]
+                right_on = right_on[sorter]
+
+            sorter = _grouped_lexsort(left, left_on, [left_start], return_indexer=True, validate_groups=True)
+            left = left.iloc[sorter]
+            if left_on is not None:
+                left_on = left_on[sorter]
+
+            spec = _find_contained_points(
+                right,
+                left[left_start],
+                right_on,
+                left_on,
+                [(right_start, include_right_start, right_stop, include_right_stop)],
+            )
+            indexer = _explode(spec[0], left.index)[::-1]  # this is the "inner" indexer
+            if keep_order:
+                sorter = _grouped_lexsort(
+                    pd.Series(indexer[1]).to_frame("__tmp__"),
+                    indexer[0],
+                    ["__tmp__"],
+                    return_indexer=True,
+                    validate_groups=True,
+                )
+                keep_order = False  # no need to sort it again in _finalize_indexers
+            else:
+                sorter = np.argsort(indexer[0])
+            indexer = indexer[:, sorter]
         else:
             # proper interval overlaps
 
@@ -435,6 +473,7 @@ def merge_intervals(
                 [(right_start, not include_left_start, right_stop, include_left_start and include_right_stop)],
             )
             indexer_a = _explode(spec[0], left.index)[::-1]  # this is the "inner" indexer of a in Lc, dR
+            indexer_a = indexer_a[:, np.argsort(indexer_a[0])]
 
             # c in La, bR
             spec = _find_contained_points(
@@ -444,12 +483,15 @@ def merge_intervals(
                 right_on,
                 [(left_start, include_left_start, left_stop, include_left_stop and include_right_start)],
             )
+            spec[0].sort_index(inplace=True)
             indexer_c = _explode(spec[0], right.index)  # this is the "inner" indexer of c in La, bR
 
             # `indexer_a` and `indexer_c` are pairwise disjoint, so we can simply concatenate them
-            indexer = np.concatenate([indexer_a, indexer_c], axis=1)  # this is the "inner" indexer
+            # their first rows are both increasing, so we can use np.searchsorted to maintain increasing first row
+            loc = np.searchsorted(indexer_a[0], indexer_c[0])
+            indexer = np.insert(indexer_a, loc, indexer_c, axis=1)  # this is the "inner" indexer, increasing first row
 
-    indexer = _finalize_indexers(indexer, len(left_orig), len(right_orig), how)
+    indexer = _finalize_indexers(indexer, len(left_orig), len(right_orig), how, keep_order)
 
     if return_indexers:
         return indexer
@@ -463,7 +505,7 @@ def _explode(row_spec: pd.DataFrame, indexer: Optional[np.ndarray] = None) -> np
     out[0] = np.repeat(row_spec.index, n)
     cs = np.roll(np.cumsum(n.values), 1)
     cs[:1] = 0
-    out[1] = np.repeat(row_spec["first"].values, n) + np.arange(out.shape[1], dtype=out.dtype) - np.repeat(cs, n)
+    out[1] = np.repeat(row_spec["first"].values - cs, n) + np.arange(out.shape[1], dtype=out.dtype)
     if indexer is not None:
         np.take(np.asarray(indexer, out.dtype), out[1], out=out[1])
 
@@ -476,6 +518,7 @@ def _get_equi_join_indexers(
     left_indexer: Optional[np.ndarray] = None,
     right_indexer: Optional[np.ndarray] = None,
 ) -> np.ndarray:
+    # assumption: `left_indexer` and `right_indexer`, if given, are strictly increasing
     lidx, ridx = pd.core.reshape.merge.get_join_indexers(left_keys, right_keys, sort=False, how="inner")
     if lidx is None:
         if ridx is None:
@@ -485,6 +528,7 @@ def _get_equi_join_indexers(
             lidx = np.arange(len(ridx), dtype=ridx.dtype)
             ridx = np.asarray(ridx)
     else:
+        # `lidx` is increasing
         lidx = np.asarray(lidx)
         if ridx is None:
             ridx = np.arange(len(lidx), dtype=lidx.dtype)
@@ -499,18 +543,20 @@ def _get_equi_join_indexers(
     return np.stack([lidx, ridx], axis=0)
 
 
-def _finalize_indexers(indexers: np.ndarray, left_len: int, right_len: int, how: str) -> np.ndarray:
+def _finalize_indexers(indexers: np.ndarray, left_len: int, right_len: int, how: str, keep_order: bool) -> np.ndarray:
+    # `indexers[0]` is assumed to be increasing
     # `how` cannot be "right"!
 
-    # sort `indexers`
-    sorter = _grouped_lexsort(
-        pd.Series(indexers[1]).to_frame("__tmp__"),
-        indexers[0],
-        ["__tmp__"],
-        return_indexer=True,
-        validate_groups=True,
-    )
-    indexers = indexers[:, sorter]
+    if keep_order:
+        # sort `indexers`
+        sorter = _grouped_lexsort(
+            pd.Series(indexers[1]).to_frame("__tmp__"),
+            indexers[0],
+            ["__tmp__"],
+            return_indexer=True,
+            validate_groups=False,
+        )
+        indexers = indexers[:, sorter]
 
     if how == "outer":
         missing_right = np.setdiff1d(np.arange(right_len), indexers[1])
@@ -537,16 +583,38 @@ def _finalize_indexers(indexers: np.ndarray, left_len: int, right_len: int, how:
 
 
 def _reindex_and_concat(left: pd.DataFrame, right: pd.DataFrame, indexers: np.ndarray, suffixes, copy) -> pd.DataFrame:
-    left = left.reset_index(drop=True, inplace=False)
-    right = right.reset_index(drop=True, inplace=False)
+    llabels, rlabels = pd.core.reshape.merge._items_overlap_with_suffix(left.columns, right.columns, suffixes)
 
-    left = left.reindex(indexers[0])
-    right = right.reindex(indexers[1])
+    left_missing = (indexers[0] < 0).any()
+    right_missing = (indexers[1] < 0).any()
+
+    if left_missing:
+        left = left.reset_index(drop=True, inplace=False)
+        left = left.reindex(indexers[0])
+
+        if right_missing:
+            right = right.reset_index(drop=True, inplace=False)
+            right = right.reindex(indexers[1])
+        else:
+            right = right.iloc[indexers[1]]
+    else:
+        if right_missing:
+            left = left.iloc[indexers[0]]
+            right = right.reset_index(drop=True, inplace=False)
+            right = right.reindex(indexers[1])
+        else:
+            # fast track, inspired by PyJanitor:
+            # https://github.com/pyjanitor-devs/pyjanitor/blob/dev/janitor/functions/conditional_join.py#L1174
+            dct = {}
+            for key, (_, value) in zip(llabels, left.items()):
+                dct[key] = value.values[indexers[0]]
+            for key, (_, value) in zip(rlabels, right.items()):
+                dct[key] = value.values[indexers[1]]
+            return pd.DataFrame(dct, copy=copy)
 
     left.reset_index(drop=True, inplace=True)
     right.reset_index(drop=True, inplace=True)
 
-    llabels, rlabels = pd.core.reshape.merge._items_overlap_with_suffix(left.columns, right.columns, suffixes)
     left.columns = llabels
     right.columns = rlabels
 
@@ -619,7 +687,7 @@ def _find_contained_points(
                 if intervals_on is None:
                     df = pd.DataFrame(
                         index=intervals.index,
-                        data=dict(first=points_idx.min().astype(np.int64), last=points_idx.max().astype(np.int64)),
+                        data=dict(first=int(points_idx.min()), last=int(points_idx.max())),
                     )
                 else:
                     df = (
@@ -647,7 +715,7 @@ def _find_contained_points(
                     last_idx = df[idx_col].ffill()[df[type_col] == b_type]
                     last_idx.dropna(inplace=True)
                     df = last_idx.to_frame("last")
-                    df["first"] = points_idx.min().astype(np.int64)
+                    df["first"] = int(points_idx.min())
                 else:
                     # construct DataFrame with interval endpoints and points, and make sure it is sorted wrt. `on`
                     on_vals = intervals_on[mask]
@@ -704,7 +772,7 @@ def _find_contained_points(
                     first_idx = df[idx_col].bfill()[df[type_col] == a_type]
                     first_idx.dropna(inplace=True)
                     df = first_idx.to_frame("first")
-                    df["last"] = points_idx.max().astype(np.int64)
+                    df["last"] = int(points_idx.max())
                 else:
                     # construct DataFrame with interval endpoints and points, and make sure it is sorted wrt. `on`
                     on_vals = intervals_on[mask]
