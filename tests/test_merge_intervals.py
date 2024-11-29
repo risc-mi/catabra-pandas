@@ -199,27 +199,35 @@ def test_open_closed(seed: int = 0):
 def test_how():
     left = pd.DataFrame(data=dict(start=[0, 7, 1, 8], stop=[2, 8, 5, 9]))
     right = pd.DataFrame(data=dict(start=[10, 4, 0], stop=[11, 5, 3]))
-    kwargs = dict(left_start="start", left_stop="stop", right_start="start", right_stop="stop", return_indexers=True)
+    kwargs = dict(left_start="start", left_stop="stop", right_start="start", right_stop="stop")
 
     # inner
-    indexer = merge_intervals(left, right, how="inner", **kwargs)
+    indexer = merge_intervals(left, right, how="inner", return_indexers=True, **kwargs)
     assert indexer.shape == (2, 3)
     assert (indexer == np.array([[0, 2, 2], [2, 1, 2]])).all()
+    df = merge_intervals(left, right, how="inner", return_indexers=False, **kwargs)
+    assert len(df) == 3
 
     # left
-    indexer = merge_intervals(left, right, how="left", **kwargs)
+    indexer = merge_intervals(left, right, how="left", return_indexers=True, **kwargs)
     assert indexer.shape == (2, 5)
     assert (indexer == np.array([[0, 1, 2, 2, 3], [2, -1, 1, 2, -1]])).all()
+    df = merge_intervals(left, right, how="left", return_indexers=False, **kwargs)
+    assert len(df) == 5
 
     # right
-    indexer = merge_intervals(left, right, how="right", **kwargs)
+    indexer = merge_intervals(left, right, how="right", return_indexers=True, **kwargs)
     assert indexer.shape == (2, 4)
     assert (indexer == np.array([[-1, 2, 0, 2], [0, 1, 2, 2]])).all()
+    df = merge_intervals(left, right, how="right", return_indexers=False, **kwargs)
+    assert len(df) == 4
 
     # outer
-    indexer = merge_intervals(left, right, how="outer", **kwargs)
+    indexer = merge_intervals(left, right, how="outer", return_indexers=True, **kwargs)
     assert indexer.shape == (2, 6)
     assert (indexer == np.array([[0, 1, 2, 2, 3, -1], [2, -1, 1, 2, -1, 0]])).all()
+    df = merge_intervals(left, right, how="outer", return_indexers=False, **kwargs)
+    assert len(df) == 6
 
 
 @pytest.mark.parametrize(
@@ -373,6 +381,71 @@ def test_nan_inf(n: int, seed: int):
     assert (out["idx_y"].values == gt["idx_y"].values).all(), kwargs
 
 
+def test_keep():
+    left = pd.DataFrame(data=dict(start=[4, 4, 0, 2, -7, 50], stop=[5, 6, 0, 2, -4, 52]), dtype=np.int8)
+    right = pd.DataFrame(
+        data=dict(start=[1, 23, 3, -10, 10, 4, -1, -2, 3, 12, 2], stop=[2, 24, 4, -7, 15, 4, 0, 0, 4, 14, 2]),
+        dtype=np.int8,
+    )
+    kwargs = dict(how="inner", left_start="start", right_stop="stop", return_indexers=True)
+
+    for left_stop in ("start", "stop"):
+        for right_start in ("start", "stop"):
+            indexer = merge_intervals(left, right, keep="all", left_stop=left_stop, right_start=right_start, **kwargs)
+            assert indexer.shape == (2, 11), (left_stop, right_start)
+            assert (indexer == np.array([[0, 0, 0, 1, 1, 1, 2, 2, 3, 3, 4], [2, 5, 8, 2, 5, 8, 6, 7, 0, 10, 3]])).all()
+
+            indexer = merge_intervals(left, right, keep="first", left_stop=left_stop, right_start=right_start, **kwargs)
+            assert indexer.shape == (2, 5), (left_stop, right_start)
+            assert (indexer == np.array([[0, 1, 2, 3, 4], [2, 2, 6, 0, 3]])).all()
+
+            indexer = merge_intervals(left, right, keep="last", left_stop=left_stop, right_start=right_start, **kwargs)
+            assert indexer.shape == (2, 5), (left_stop, right_start)
+            assert (indexer == np.array([[0, 1, 2, 3, 4], [8, 8, 7, 10, 3]])).all()
+
+            indexer = merge_intervals(left, right, keep="both", left_stop=left_stop, right_start=right_start, **kwargs)
+            assert indexer.shape == (2, 9), (left_stop, right_start)
+            assert (indexer == np.array([[0, 0, 1, 1, 2, 2, 3, 3, 4], [2, 8, 2, 8, 6, 7, 0, 10, 3]])).all()
+
+    # `right` is already sorted
+    left = pd.DataFrame(data=dict(start=[-1, -3, 1, 0, 5], stop=[7, -1, 9, 5, 7]), dtype=np.int8)
+    right = pd.DataFrame(data=dict(a=np.arange(4, dtype=np.int8) * 2))
+    kwargs = dict(how="inner", left_start="start", left_stop="stop", right_start="a", right_stop="a")
+
+    indexer = merge_intervals(left, right, keep="first", return_indexers=True, **kwargs)
+    assert indexer.shape == (2, 4)
+    assert (indexer == np.array([[0, 2, 3, 4], [0, 1, 0, 3]])).all()
+
+    indexer = merge_intervals(left, right, keep="last", return_indexers=True, **kwargs)
+    assert indexer.shape == (2, 4)
+    assert (indexer == np.array([[0, 2, 3, 4], [3, 3, 2, 3]])).all()
+
+    indexer = merge_intervals(left, right, keep="both", return_indexers=True, **kwargs)
+    assert indexer.shape == (2, 7)
+    assert (indexer == np.array([[0, 0, 2, 2, 3, 3, 4], [0, 3, 1, 3, 0, 2, 3]])).all()
+
+    # proper overlap
+    left = pd.DataFrame(data=dict(start=[0, -3], stop=[4, -1]), dtype=np.int8)
+    right = pd.DataFrame(data=dict(start=[1, -1, 2, -2, 1, -4], stop=[4, 2, 5, 3, 3, -1]))
+    kwargs = dict(how="inner", left_start="start", left_stop="stop", right_start="start", right_stop="stop")
+
+    indexer = merge_intervals(left, right, keep="all", return_indexers=True, **kwargs)
+    assert indexer.shape == (2, 8)
+    assert (indexer == np.array([[0, 0, 0, 0, 0, 1, 1, 1], [0, 1, 2, 3, 4, 1, 3, 5]])).all()
+
+    indexer = merge_intervals(left, right, keep="first", return_indexers=True, **kwargs)
+    assert indexer.shape == (2, 2)
+    assert (indexer == np.array([[0, 1], [0, 1]])).all()
+
+    indexer = merge_intervals(left, right, keep="last", return_indexers=True, **kwargs)
+    assert indexer.shape == (2, 2)
+    assert (indexer == np.array([[0, 1], [4, 5]])).all()
+
+    indexer = merge_intervals(left, right, keep="both", return_indexers=True, **kwargs)
+    assert indexer.shape == (2, 4)
+    assert (indexer == np.array([[0, 0, 1, 1], [0, 4, 1, 5]])).all()
+
+
 def test_exceptions():
     import warnings
 
@@ -381,6 +454,12 @@ def test_exceptions():
 
     try:
         merge_intervals(left, right, how=True)
+        assert False
+    except ValueError:
+        pass
+
+    try:
+        merge_intervals(left, right, keep="any")
         assert False
     except ValueError:
         pass

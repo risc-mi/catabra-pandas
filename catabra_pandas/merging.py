@@ -28,6 +28,7 @@ def merge_intervals(
     include_right_start: bool = True,
     include_right_stop: bool = True,
     suffixes: tuple = ("_x", "_y"),
+    keep: str = "all",
     keep_order: bool = True,
     copy: Optional[bool] = None,
     return_indexers: bool = False,
@@ -88,9 +89,17 @@ def merge_intervals(
         column names in `left` and `right` respectively. Pass a value of None to indicate that the column name from
         `left` or `right` should be left as-is, with no suffix. At least one of the values must not be None.
         Ignored if `return_indexer` is True.
+    keep : str, default="all"
+        Which matching rows to keep from `right`, for each row in `left`:
+        * "all": Keep all matching rows.
+        * "first": Only keep the first matching row.
+        * "last": Only keep the last matching row.
+        * "both": Keep the first and the last matching rows.
+        If `how` is "right", all/first/last/both matching rows in `left` are kept for each row in `right`.
     keep_order : bool, default=True
         Maintain the order of rows in `right` (or `left` if `how` is "right") in the result. That means, if a row in
-        `left` has multiple matching rows in `right`, their order is as in `right`.
+        `left` has multiple matching rows in `right`, their order is as in `right`. Ignored if `keep` is different from
+        "all".
         Setting this parameter to False avoids some internal sorting, thereby increasing efficiency.
     copy : bool, optional
         If False, avoid copy if possible. Ignored if `return_indexers` is True.
@@ -153,6 +162,7 @@ def merge_intervals(
             include_left_stop=include_right_stop,
             include_right_start=include_left_start,
             include_right_stop=include_left_stop,
+            keep=keep,
             keep_order=keep_order,
             return_indexers=True,
         )[::-1]
@@ -164,6 +174,8 @@ def merge_intervals(
 
     if how not in ("left", "outer", "inner"):
         raise ValueError(f'`how` must be one of "left", "right", "outer" or "inner", but got "{how}"')
+    if keep not in ("all", "first", "last", "both"):
+        raise ValueError(f'`keep` must be one of "all", "first", "last" or "both", but got "{keep}"')
 
     if on is None:
         if left_on is None:
@@ -333,23 +345,21 @@ def merge_intervals(
             raise ValueError("No columns to perform merge on.")
         else:
             # standard equi-join on `left_on` and `right_on`
-            indexer = _get_equi_join_indexers([left_on], [right_on], left_indexer=left.index, right_indexer=right.index)
+            indexer = _get_equi_join_indexers([left_on], [right_on], left.index, right.index, keep=keep)
     elif left_start == left_stop and right_start == right_stop:
         if left_on is None:
             # standard equi-join on `left_start` and `right_start`
             indexer = _get_equi_join_indexers(
-                [left[left_start].values],
-                [right[right_start].values],
-                left_indexer=left.index,
-                right_indexer=right.index,
+                [left[left_start].values], [right[right_start].values], left.index, right.index, keep=keep
             )
         else:
             # standard equi-join on `[left_on, left_start]` and `[right_on, right_start]`
             indexer = _get_equi_join_indexers(
                 [left_on, left[left_start].values],
                 [right_on, right[right_start].values],
-                left_indexer=left.index,
-                right_indexer=right.index,
+                left.index,
+                right.index,
+                keep=keep,
             )
     else:
         if (
@@ -392,7 +402,7 @@ def merge_intervals(
                 [(left_start, include_left_start, left_stop, include_left_stop)],
             )
             spec[0].sort_index(inplace=True)
-            indexer = _explode(spec[0], right.index)  # this is the "inner" indexer, first row is increasing
+            indexer = _explode(spec[0], right.index, keep=keep)  # this is the "inner" indexer, first row is increasing
         elif left_start == left_stop:
             # left start points contained in right intervals
 
@@ -413,7 +423,7 @@ def merge_intervals(
                 left_on,
                 [(right_start, include_right_start, right_stop, include_right_stop)],
             )
-            indexer = _explode(spec[0], left.index)[::-1]  # this is the "inner" indexer
+            indexer = _explode(spec[0], left.index, swap=True, keep=keep)  # this is the "inner" indexer
             if keep_order:
                 sorter = _grouped_lexsort(
                     pd.Series(indexer[1]).to_frame("__tmp__"),
@@ -472,7 +482,9 @@ def merge_intervals(
                 left_on,
                 [(right_start, not include_left_start, right_stop, include_left_start and include_right_stop)],
             )
-            indexer_a = _explode(spec[0], left.index)[::-1]  # this is the "inner" indexer of a in Lc, dR
+            indexer_a = _explode(
+                spec[0], left.index, swap=True, keep=keep
+            )  # this is the "inner" indexer of a in Lc, dR
             indexer_a = indexer_a[:, np.argsort(indexer_a[0])]
 
             # c in La, bR
@@ -484,12 +496,15 @@ def merge_intervals(
                 [(left_start, include_left_start, left_stop, include_left_stop and include_right_start)],
             )
             spec[0].sort_index(inplace=True)
-            indexer_c = _explode(spec[0], right.index)  # this is the "inner" indexer of c in La, bR
+            indexer_c = _explode(spec[0], right.index, keep=keep)  # this is the "inner" indexer of c in La, bR
 
             # `indexer_a` and `indexer_c` are pairwise disjoint, so we can simply concatenate them
             # their first rows are both increasing, so we can use np.searchsorted to maintain increasing first row
             loc = np.searchsorted(indexer_a[0], indexer_c[0])
             indexer = np.insert(indexer_a, loc, indexer_c, axis=1)  # this is the "inner" indexer, increasing first row
+
+            if keep != "all":
+                indexer = np.stack(_keep_indexers(indexer[0], indexer[1], keep), axis=0)
 
     indexer = _finalize_indexers(indexer, len(left_orig), len(right_orig), how, keep_order)
 
@@ -499,48 +514,102 @@ def merge_intervals(
         return _reindex_and_concat(left_orig, right_orig, indexer, suffixes, copy)
 
 
-def _explode(row_spec: pd.DataFrame, indexer: Optional[np.ndarray] = None) -> np.ndarray:
-    n = row_spec["last"] - row_spec["first"] + 1
-    out = np.empty((2, n.sum()), dtype=row_spec["last"].dtype)
-    out[0] = np.repeat(row_spec.index, n)
-    cs = np.roll(np.cumsum(n.values), 1)
-    cs[:1] = 0
-    out[1] = np.repeat(row_spec["first"].values - cs, n) + np.arange(out.shape[1], dtype=out.dtype)
-    if indexer is not None:
-        np.take(np.asarray(indexer, out.dtype), out[1], out=out[1])
+def _explode(row_spec: pd.DataFrame, indexer: np.ndarray, swap: bool = False, keep: str = "all") -> np.ndarray:
+    # in contrast to `_get_equi_join_indexers()`, `indexer` does not need to be increasing; it's still unique, though
 
-    return out
+    indexer = np.asarray(indexer, dtype=row_spec["last"].dtype)
+
+    if swap or keep == "all" or not (indexer[:-1] < indexer[1:]).all():
+        i, j = (1, 0) if swap else (0, 1)
+
+        n = row_spec["last"] - row_spec["first"] + 1
+        out = np.empty((2, n.sum()), dtype=indexer.dtype)
+        out[i] = np.repeat(row_spec.index, n)
+        cs = np.roll(np.cumsum(n.values), 1)
+        cs[:1] = 0
+        out[j] = np.repeat(row_spec["first"].values - cs, n) + np.arange(out.shape[1], dtype=out.dtype)
+        np.take(indexer, out[j], out=out[j])
+
+        if keep != "all":
+            out = np.stack(_keep_indexers(out[0], out[1], keep), axis=0)
+
+        return out
+    else:
+        # fast track: `indexer` is strictly increasing
+        # it's a bit unfortunate that fast track is only possible with sorted `indexer` :(
+        if keep == "both":
+            lidx = np.repeat(row_spec.index, 2)
+            ridx = row_spec.values.flatten()
+
+            # mask all elements that are distinct from their previous elements
+            mask = (np.roll(lidx, 1) != lidx) | (np.roll(ridx, 1) != ridx)
+            mask[:1] = True
+            lidx = lidx[mask]
+            ridx = ridx[mask]
+        else:
+            lidx = row_spec.index
+            ridx = row_spec[keep].values
+        np.take(indexer, ridx, out=ridx)
+        return np.stack([lidx, ridx], axis=0)
 
 
 def _get_equi_join_indexers(
     left_keys: List[np.ndarray],
     right_keys: List[np.ndarray],
-    left_indexer: Optional[np.ndarray] = None,
-    right_indexer: Optional[np.ndarray] = None,
+    left_indexer: np.ndarray,
+    right_indexer: np.ndarray,
+    keep: str = "all",
 ) -> np.ndarray:
     # assumption: `left_indexer` and `right_indexer`, if given, are strictly increasing
     lidx, ridx = pd.core.reshape.merge.get_join_indexers(left_keys, right_keys, sort=False, how="inner")
     if lidx is None:
+        # every row in `left` appears exactly once => `keep` is irrelevant
         if ridx is None:
-            lidx = np.arange(len(left_keys[0]))
-            ridx = lidx
+            lidx = np.asarray(left_indexer)
+            ridx = np.asarray(right_indexer)
         else:
-            lidx = np.arange(len(ridx), dtype=ridx.dtype)
+            lidx = np.asarray(left_indexer[: len(ridx)], dtype=ridx.dtype)
             ridx = np.asarray(ridx)
+            np.take(np.asarray(right_indexer, dtype=ridx.dtype), ridx, out=ridx)
     else:
         # `lidx` is increasing
         lidx = np.asarray(lidx)
+        take = True
         if ridx is None:
-            ridx = np.arange(len(lidx), dtype=lidx.dtype)
+            ridx = np.asarray(right_indexer[: len(lidx)], dtype=lidx.dtype)
+            take = False
         else:
-            ridx = np.asarray(ridx)
+            ridx = np.asarray(ridx, dtype=lidx.dtype)
 
-    if left_indexer is not None:
-        np.take(np.asarray(left_indexer, lidx.dtype), lidx, out=lidx)
-    if right_indexer is not None:
-        np.take(np.asarray(right_indexer, ridx.dtype), ridx, out=ridx)
+        # since `right_index` is strictly increasing, we can defer np.take after finding the smallest/largest index
+        # in each group
+        lidx, ridx = _keep_indexers(lidx, ridx, keep)
+        np.take(np.asarray(left_indexer, dtype=lidx.dtype), lidx, out=lidx)
+        if take:
+            np.take(np.asarray(right_indexer, dtype=ridx.dtype), ridx, out=ridx)
 
     return np.stack([lidx, ridx], axis=0)
+
+
+def _keep_indexers(lidx: np.ndarray, ridx: np.ndarray, keep: str) -> tuple[np.ndarray, np.ndarray]:
+    if keep == "both":
+        s = pd.Series(ridx, index=lidx).groupby(level=0).agg(["min", "max"])
+        lidx = np.repeat(np.asarray(s.index, dtype=lidx.dtype), 2)
+        ridx = s.values.flatten()
+
+        # mask all elements that are distinct from their previous elements
+        mask = (np.roll(lidx, 1) != lidx) | (np.roll(ridx, 1) != ridx)
+        mask[:1] = True
+        lidx = lidx[mask]
+        ridx = ridx[mask]
+    elif keep != "all":
+        if keep == "first":
+            s = pd.Series(ridx, index=lidx).groupby(level=0).min()
+        else:
+            s = pd.Series(ridx, index=lidx).groupby(level=0).max()
+        lidx = np.asarray(s.index, dtype=s.dtype)
+        ridx = s.values
+    return lidx, ridx
 
 
 def _finalize_indexers(indexers: np.ndarray, left_len: int, right_len: int, how: str, keep_order: bool) -> np.ndarray:
