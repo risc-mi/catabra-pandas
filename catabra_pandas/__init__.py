@@ -1,11 +1,10 @@
 #  Copyright (c) 2024. RISC Software GmbH.
 #  All rights reserved.
 
-from .merging import merge_intervals
+from .merging import find_containing_interval, merge_intervals
 from .misc import (
     combine_intervals,
     factorize,
-    find_containing_interval,
     group_intervals,
     grouped_mode,
     impute,

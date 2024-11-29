@@ -27,6 +27,8 @@ def test_random(n_rows: int, n_groups: int, seed: int):
     intervals, _ = create_random_data(n_rows, 1, n_entities=n_groups, intervals=True, seed=seed)
 
     # make intervals pairwise disjoint
+    # this was necessary with the old version of `find_containing_interval`, but is not necessary anymore
+    # it doesn't do any harm either, so we just leave it that way
     intervals = combine_intervals(intervals[["entity", "start", "stop"]], group_by="entity", n_min=1, n_max=1)
 
     rng = np.random.RandomState(seed=seed)
@@ -48,11 +50,12 @@ def test_random(n_rows: int, n_groups: int, seed: int):
         + pd.Timedelta(1, unit="m")
     ).values
 
-    df = find_containing_interval(points, intervals, "point", include_stop=False, group_by="entity")
+    df = find_containing_interval(points, intervals, "point", which="both", include_stop=False, group_by="entity")
 
-    assert df.shape == (len(gt), 1)
+    assert df.shape == (len(gt), 2)
     assert (df.index == gt.index).all()
-    assert (df["point"] == gt).all()
+    assert (df[("first", "point")] == gt).all()
+    assert (df[("last", "point")] == gt).all()
 
 
 def test_infinite():

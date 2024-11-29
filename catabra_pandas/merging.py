@@ -114,9 +114,13 @@ def merge_intervals(
         If `return_indexers` is True: array of shape `(2, N)` that describe which rows of `left` to combine with which
         rows of `right` (`iloc`-indices). -1 refers to missing rows, if `how` is not "inner".
 
+    See Also
+    --------
+    pandas.merge
+    pandas.merge_asof
+
     Notes
     -----
-
     Data types:
     Interval data types can be arbitrary, as long as they match between `left` and `right` and support sorting with
     `np.argsort` and `np.lexsort`. It is important to note that an interval is defined as the set of all points greater
@@ -512,6 +516,147 @@ def merge_intervals(
         return indexer
     else:
         return _reindex_and_concat(left_orig, right_orig, indexer, suffixes, copy)
+
+
+def find_containing_interval(
+    points: pd.DataFrame,
+    intervals: pd.DataFrame,
+    point_cols: str,
+    which: str = "first",
+    start_col: Optional[str] = "start",
+    stop_col: Optional[str] = "stop",
+    length_col: Optional[str] = None,
+    group_by=None,
+    include_start: bool = True,
+    include_stop: bool = True,
+) -> pd.DataFrame:
+    """For each point in a given DataFrame, find the first and/or last interval containing that point (if any) in
+    another given DataFrame of intervals.
+
+    Parameters
+    ----------
+    points : pd.DataFrame
+        DataFrame with points. Points can have arbitrary data type, like numeric or datetime, as long as they support
+        sorting with `np.argsort` and `np.lexsort`.
+    intervals : pd.DataFrame
+        DataFrame with intervals. Interval endpoints must have the same data type as the points in `points`.
+    point_cols : str
+        Name(s) of the column(s) in `points` with actual points. Can be more than one column, which is particularly
+        convenient for finding intervals that contain intervals rather than single points.
+    which : str, default="first"
+        Which intervals to return:
+        * "first": Return only the index of the first containing interval.
+        * "last": Return only the index of the last containing interval.
+        * "both": Return the indices of the first and last containing intervals.
+    start_col : str, optional, default="start"
+        Name of the column in `intervals` that contains left endpoints.
+    stop_col : str, optional, default="stop"
+        Name of the column in `intervals` that contains right endpoints.
+    length_col : str, optional
+        Name of the column in `intervals` that contains interval lengths.
+    group_by : optional
+        Column(s) by which to group points and intervals. The containing intervals of a point are only searched among
+        the intervals in the same group.
+    include_start : bool, default=True
+        Include the left endpoint of each interval.
+    include_stop : bool, default=True
+        Include the right endpoint of each interval.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with identical row index as `points` and one column for every element in `point_cols`, with the
+        same name. Values are -1 or the `iloc`-index (in `intervals`) of the first/last interval containing the
+        respective point, depending on `which`.
+        If `which` is "both", the column index is a MultiIndex with levels ["first", "last"] and `point_cols`.
+
+    Notes
+    -----
+    "First" and "last" interval refers to the original order in `intervals`. If the first interval containing some
+    point `p` has index `i` and the last interval has index `j`, then the following are true:
+    * `i` <= `j`, with equality iff `p` is contained in exactly one interval (namely `i`),
+    * `p` is not contained in any interval before `i`,
+    * `p` is not contained in any interval after `j`,
+    * `p` may be contained in intervals between `i` and `j`,
+    * `p` does not need to be contained in all intervals between `i` and `j`.
+    """
+
+    if which not in ("first", "last", "both"):
+        raise ValueError(f'`which` must be one of "first", "last" or "both", but got "{which}"')
+
+    if not isinstance(point_cols, list):
+        point_cols = [point_cols]
+    elif len(point_cols) == 0:
+        raise ValueError("`point_cols` must not be empty.")
+
+    if length_col is not None:
+        if start_col is None and stop_col is None:
+            raise ValueError("If `length_col` is given, one of `start_col`and `stop_col` must be given, too.")
+        elif start_col is not None and stop_col is not None:
+            raise ValueError("`start_col`, `stop_col` and `length_col` cannot all be given, at least one must be None.")
+
+        intervals = intervals.copy()
+        if stop_col is None:
+            intervals[length_col] = intervals[start_col] + intervals[length_col]
+            stop_col = length_col
+        else:
+            intervals[length_col] = intervals[stop_col] - intervals[length_col]
+            start_col = length_col
+
+    if group_by is None:
+        group_by = []
+    elif not isinstance(group_by, list):
+        group_by = [group_by]
+
+    index = points.index
+    if len(points) > 1:
+        points = pd.concat(
+            [points[group_by + [c]].rename({c: point_cols[0]}, axis=1) for c in point_cols],
+            axis=0,
+            ignore_index=True,
+            sort=False,
+        )
+
+    indexers = merge_intervals(
+        points,
+        intervals,
+        on=group_by,
+        how="inner",
+        left_start=point_cols[0],
+        left_stop=point_cols[0],
+        right_start=start_col,
+        right_stop=stop_col,
+        include_right_start=include_start,
+        include_right_stop=include_stop,
+        keep=which,
+        return_indexers=True,
+    )
+
+    if which == "both":
+        s = pd.Series(indexers[1], index=indexers[0]).groupby(level=0).agg(["min", "max"])
+        point_idx = s.index
+        min_idx = s["min"].values
+
+        max_out = -np.ones(len(points), dtype=np.int64)
+        max_out[point_idx] = s["max"].values
+        max_out = max_out.reshape(len(point_cols), -1)
+    else:
+        point_idx = indexers[0]
+        min_idx = indexers[1]
+        max_out = None
+
+    min_out = -np.ones(len(points), dtype=np.int64)
+    min_out[point_idx] = min_idx
+    min_out = min_out.reshape(len(point_cols), -1)
+
+    if max_out is None:
+        return pd.DataFrame(data=min_out.T, index=index, columns=point_cols)
+    else:
+        return pd.DataFrame(
+            data=np.concatenate([min_out.T, max_out.T], axis=1),
+            index=index,
+            columns=pd.MultiIndex.from_product([["first", "last"], point_cols]),
+        )
 
 
 def _explode(row_spec: pd.DataFrame, indexer: np.ndarray, swap: bool = False, keep: str = "all") -> np.ndarray:
