@@ -125,8 +125,6 @@ catabra_pandas.find_containing_interval(
 )
 ```
 
-**Note**: intervals must be pairwise disjoint in each group.
-
 ## References
 
 **If you use CaTabRa-pandas in your research, we would appreciate citing the following conference paper:**
