@@ -17,6 +17,10 @@ classifiers = [
 [tool.poetry.dependencies]
 # https://python-poetry.org/docs/dependency-specification/
 python = "^3.6.1"
+numpy = [
+    {version = ">=1.19.5", python = "<3.9"},
+    {version = ">=1.26.4", python = ">=3.9"}
+]
 pandas = ">=1.0.0,<3.0"     # CoW might be problematic: https://pandas.pydata.org/docs/dev/user_guide/copy_on_write.html
 
 [tool.poetry.group.dev.dependencies]
