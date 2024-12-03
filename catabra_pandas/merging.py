@@ -148,35 +148,21 @@ def merge_intervals(
     lexicographically, reverse-lexicographically, by size, etc.
     """
 
+    swap_left_right = False
+    lstr = "left"
+    rstr = "right"
     if how == "right":
-        indexers = merge_intervals(
-            right,
-            left,
-            how="left",
-            on=on,
-            left_on=right_on,
-            right_on=left_on,
-            left_index=right_index,
-            right_index=left_index,
-            left_start=right_start,
-            left_stop=right_stop,
-            right_start=left_start,
-            right_stop=left_stop,
-            include_left_start=include_right_start,
-            include_left_stop=include_right_stop,
-            include_right_start=include_left_start,
-            include_right_stop=include_left_stop,
-            keep=keep,
-            keep_order=keep_order,
-            return_indexers=True,
-        )[::-1]
-
-        if return_indexers:
-            return indexers
-        else:
-            return _reindex_and_concat(left, right, indexers, suffixes, copy)
-
-    if how not in ("left", "outer", "inner"):
+        how = "left"
+        left, right = right, left
+        left_on, right_on = right_on, left_on
+        left_index, right_index = right_index, left_index
+        left_start, right_start = right_start, left_start
+        left_stop, right_stop = right_stop, left_stop
+        include_left_start, include_right_start = include_right_start, include_left_start
+        include_left_stop, include_right_stop = include_right_stop, include_left_stop
+        lstr, rstr = rstr, lstr
+        swap_left_right = True
+    elif how not in ("left", "outer", "inner"):
         raise ValueError(f'`how` must be one of "left", "right", "outer" or "inner", but got "{how}"')
     if keep not in ("all", "first", "last", "both"):
         raise ValueError(f'`keep` must be one of "all", "first", "last" or "both", but got "{keep}"')
@@ -194,10 +180,10 @@ def merge_intervals(
                 left_on = left_index
                 left_index = True
             else:
-                raise ValueError(f"`left_index` must be bool, integer or list, but got {type(left_index)}")
+                raise ValueError(f"`{lstr}_index` must be bool, integer or list, but got {type(left_index)}")
         else:
             if left_index is not False:
-                raise ValueError("Can only pass argument `left_on` OR `left_index`, not both.")
+                raise ValueError(f"Can only pass argument `{lstr}_on` OR `{lstr}_index`, not both.")
             elif not isinstance(left_on, list):
                 left_on = [left_on]
         if right_on is None:
@@ -212,13 +198,15 @@ def merge_intervals(
                 right_on = right_index
                 right_index = True
             else:
-                raise ValueError(f"`right_index` must be bool, integer or list, but got {type(right_index)}")
+                raise ValueError(f"`{rstr}_index` must be bool, integer or list, but got {type(right_index)}")
         else:
             if right_index is not False:
-                raise ValueError("Can only pass argument `right_on` OR `right_index`, not both.")
+                raise ValueError(f"Can only pass argument `{rstr}_on` OR `{rstr}_index`, not both.")
             elif not isinstance(right_on, list):
                 right_on = [right_on]
         if len(left_on) != len(right_on):
+            if swap_left_right:
+                left_on, right_on = right_on, left_on
             raise ValueError(
                 f"`left_on` and `right_on` must have the same length, but got {len(left_on)} and {len(right_on)}"
             )
@@ -256,8 +244,8 @@ def merge_intervals(
                 left = left[mask]
         else:
             warnings.warn(
-                "If `left` is meant to be joined on isolated points,"
-                " `include_left_start` and `include_left_stop` should be True."
+                f"If `{lstr}` is meant to be joined on isolated points,"
+                f" `include_{lstr}_start` and `include_{lstr}_stop` should be True."
             )
             left = left.iloc[:0]
     else:
@@ -285,8 +273,8 @@ def merge_intervals(
                 right = right[mask]
         else:
             warnings.warn(
-                "If `right` is meant to be joined on isolated points,"
-                " `include_right_start` and `include_right_stop` should be True."
+                f"If `{rstr}` is meant to be joined on isolated points,"
+                f" `include_{rstr}_start` and `include_{rstr}_stop` should be True."
             )
             right = right.iloc[:0]
     else:
@@ -513,7 +501,9 @@ def merge_intervals(
     indexer = _finalize_indexers(indexer, len(left_orig), len(right_orig), how, keep_order)
 
     if return_indexers:
-        return indexer
+        return indexer[::-1] if swap_left_right else indexer
+    elif swap_left_right:
+        return _reindex_and_concat(right_orig, left_orig, indexer[::-1], suffixes, copy)
     else:
         return _reindex_and_concat(left_orig, right_orig, indexer, suffixes, copy)
 
