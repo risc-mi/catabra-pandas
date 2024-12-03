@@ -113,15 +113,14 @@ def group_intervals(
     out = pd.Series(index=df_sorted[sorting_col].values, data=0, dtype=np.int64)
     df.drop([sorting_col], axis=1, inplace=True, errors="ignore")
 
-    start = df_sorted[start_col].values
+    start = df_sorted[start_col]
     if start_col == stop_col:
         stop = start
     elif group_by:
         stop = df_sorted.groupby(group_by)[stop_col].cummax()
         assert (stop.index == df_sorted.index).all()
-        stop = stop.values
     else:
-        stop = df_sorted[stop_col].cummax().values
+        stop = df_sorted[stop_col].cummax()
     # `stop` is the per-group cumulative maximum of all previous interval ends.
     # This ensures that some kind of triangle inequality holds: if all interval endpoints are modified according to
     # this procedure and `I_1` and `I_2` are consecutive intervals, then there does not exist another interval `I_3`
@@ -132,18 +131,12 @@ def group_intervals(
     # always end up next to each other, but `dist(I_1, I_3) = 7 < 9 = dist(I_1, I_2)` and
     # `dist(I_2, I_3) = 6 < 9 = dist(I_1, I_2)`.
 
-    dist: np.ndarray = start - np.roll(stop, 1)
-    if isinstance(distance, pd.Timedelta):
-        distance = distance.to_timedelta64()  # cannot be compared to `dist` otherwise
-    if inclusive:
-        same_group_as_prev = dist <= distance
-    else:
-        same_group_as_prev = dist < distance
-
+    same_group_as_prev = shift_compare(
+        start, -1, np.less_equal if inclusive else np.less, other=stop + distance, fill_value=True
+    )
     if len(same_group_as_prev):
         for g in group_by:
-            same_group_as_prev &= df_sorted[g].values == np.roll(df_sorted[g].values, 1)
-        same_group_as_prev[0] = True
+            same_group_as_prev &= shift_equal(df_sorted[g], -1, fill_value=True)
     out.values[:] = (~same_group_as_prev).cumsum()
     out.sort_index(inplace=True)
     out.index = df.index
@@ -294,7 +287,7 @@ def combine_intervals(
                 aux["__a"] += aux["__" + str(n)].cumsum() > 0
         mask = np.ones((len(aux),), dtype=bool)
         for g in group_by:
-            mask &= np.roll(aux[g].values, -1) == aux[g].values
+            mask &= shift_equal(aux[g], 1)
         mask[-1] = False
         # `mask[i]` is True iff `i`-th element belongs to same group as next
         assert (mask | (aux["__a"] == 0)).all()
@@ -306,7 +299,7 @@ def combine_intervals(
         # ensure that the last element of each group is False (could be violated if `n_min` is 0)
         aux["__a"] &= mask
 
-        mask = np.roll(aux["__a"].values, 1) != aux["__a"].values
+        mask = shift_unequal(aux["__a"], -1)
         mask[0] = aux["__a"].iloc[0]
         aux = aux[mask]
         if not aux.empty:
@@ -472,13 +465,13 @@ def prev_next_values(
                 df_sorted = df.iloc[sorting]
 
         for g in group_by:
-            prev_mask |= df_aux[g].values != np.roll(df_aux[g].values, 1)
+            prev_mask |= shift_unequal(df_aux[g], -1)
         prev_mask[0] = True
 
         if df_aux is not df_sorted:
             del df_aux
 
-    next_mask = np.roll(prev_mask, -1)  # True iff next element belongs to different group
+    next_mask = roll1d(prev_mask, -1)  # True iff next element belongs to different group
     new_columns = []
     for k, v in columns.items():
         col = v.get("prev_name")
@@ -486,7 +479,7 @@ def prev_next_values(
             if len(df_sorted) == 0:
                 s = pd.Series(index=df_sorted.index, data=df_sorted[k], name=col)
             else:
-                s = pd.Series(index=df_sorted.index, data=np.roll(df_sorted[k], 1), name=col)
+                s = pd.Series(index=df_sorted.index, data=roll1d(df_sorted[k].values, 1), name=col)
                 s[prev_mask] = v.get("prev_fill", pd.Timedelta(None) if s.dtype.kind == "m" else None)
             new_columns.append(s)
 
@@ -495,7 +488,7 @@ def prev_next_values(
             if len(df_sorted) == 0:
                 s = pd.Series(index=df_sorted.index, data=df_sorted[k], name=col)
             else:
-                s = pd.Series(index=df_sorted.index, data=np.roll(df_sorted[k], -1), name=col)
+                s = pd.Series(index=df_sorted.index, data=roll1d(df_sorted[k].values, -1), name=col)
                 s[next_mask] = v.get("next_fill", pd.Timedelta(None) if s.dtype.kind == "m" else None)
             new_columns.append(s)
     if first_indicator_name is not None:
@@ -699,8 +692,7 @@ def impute(
     # `df.groupby(on).ffill()` is even faster, so we leave it
     if method == "linear":
         # check whether groups are mixed up
-        mask0 = group_values != np.roll(group_values, -1)
-        mask0[-1] = True
+        mask0 = shift_unequal(group_values, 1)
 
         if len(np.unique(group_values[mask0])) == mask0.sum():
             indexer = None
@@ -829,6 +821,144 @@ def inner_or_cross_join(left: pd.DataFrame, right: pd.DataFrame, on=None) -> pd.
         return out
     else:
         return left.join(right, on=on, how="inner")
+
+
+def roll1d(arr, shift: int):
+    """Roll elements of a 1-D array-like.
+
+    Elements that roll beyond the last position are re-introduced at the first.
+
+    Parameters
+    ----------
+    arr : pd.DataFrame | pd.Series | pd.Index | pd.Categorical | pd.ExtensionArray | array-like
+        Input array-like. Must support indexing with int-arrays, either as `arr[idx]` or `arr.iloc[idx]`.
+    shift : int
+        The number of places by which elements are shifted.
+
+    Returns
+    -------
+    Output array-like, with the same shape and type as `a`.
+
+    See Also
+    --------
+    np.roll
+
+    Notes
+    -----
+    In contrast to `np.roll`, which converts everything into a plain array before rolling, this function correctly
+    handles all sorts of pandas objects (including ExtensionArrays) and returns output with the same type.
+    If `shift` is in {-1, 0, 1}, the function is at least as efficient as `np.roll`, depending on the type of `arr`.
+
+    Examples
+    --------
+    >>> x = np.arange(10)
+    >>> roll1d(x, 2)
+    array([8, 9, 0, 1, 2, 3, 4, 5, 6, 7])
+    >>> roll1d(x, -2)
+    array([2, 3, 4, 5, 6, 7, 8, 9, 0, 1])
+    """
+
+    if len(arr) <= 1:
+        return arr
+    else:
+        shift %= len(arr)
+        if shift == 0:
+            return arr
+        elif isinstance(arr, np.ndarray):
+            return np.roll(arr, shift, axis=0)
+        elif isinstance(arr, pd.CategoricalIndex):
+            pd.Index(
+                pd.Categorical.from_codes(
+                    np.roll(arr.codes, shift, axis=0),
+                    categories=arr.categories,
+                    ordered=arr.ordered,
+                ),
+                name=arr.name,
+            )
+        elif isinstance(arr, pd.Index):
+            if arr.nlevels == 1 and arr.dtype.kind in "uifbMmO":
+                return arr.__class__(np.roll(arr, shift, axis=0))
+        elif shift in (1, -1) and hasattr(arr, "shift"):
+            idx = -1 if shift > 0 else 0
+            return arr.shift(shift, fill_value=(arr.iloc[idx] if hasattr(arr, "iloc") else arr[idx]))
+
+        idx = np.arange(-shift, len(arr) - shift)
+        return arr.iloc[idx] if hasattr(arr, "iloc") else arr[idx]
+
+
+def shift_compare(arr, shift: int, cmp, other=None, fill_value: bool = False) -> np.ndarray:
+    """Compare a given 1-D array-like element-wise to a shifted version of itself or another array-like.
+
+    Parameters
+    ----------
+    arr : pd.Series | pd.Index | pd.Categorical | pd.ExtensionArray | array-like
+        The array-like to compare.
+    shift : int
+        The number of places by which elements are shifted.
+    cmp : callable
+        The comparison relation, typically one of `np.equal`, `np.not_equal`, `np.less`, etc.
+        Must accept two equal-length array-likes as input, plus an optional third array-like for storing the output.
+    other : pd.Series | pd.Index | pd.Categorical | pd.ExtensionArray | array-like, optional
+        Other array-like to which `arr` is compared, with the same length and suitable data type.
+        None defaults to `arr`.
+    fill_value : bool, default=False
+        The value used for filling output elements that cannot be determined by comparison, namely the first `-shift`
+        elements if `shift` is negative and the last `shift` elements if it is positive.
+
+    Returns
+    -------
+    mask : np.ndarray
+        Boolean mask, array with the same length as `arr`.
+        `mask[i]` is True iff `cmp(arr[i], other[i + shift])`, or `fill_value` is True and `i + shift` is no valid
+        index.
+        So, if `shift` is -1, `mask` selects all elements that compare to the previous element in `other`, and if
+        `shift` is 1, it selects all elements that compare to the subsequent element.
+
+    Notes
+    -----
+    If `shift` in `(-len(arr), len(arr))`, this function is functionally equivalent to
+    `cmp(arr, roll1d(other, -shift))`, modulo setting some output elements to `fill_value`.
+    Note the `-shift` in `roll1d`!
+
+    In constrast to function `roll1d`, `shift_compare(arr, shift, cmp)` is *not* the same as
+    `shift_compare(arr, shift + len(arr), cmp)`!
+    """
+    if len(arr) == 0:
+        return np.empty(arr.shape, dtype=bool)
+    elif shift == 0:
+        if other is None:
+            return np.ones(len(arr), dtype=bool)
+        else:
+            if isinstance(arr, pd.Series):
+                arr = arr.values
+            if isinstance(other, pd.Series):
+                other = other.values
+            return cmp(arr, other)
+    else:
+        out = np.ones(len(arr), dtype=bool) if fill_value else np.zeros(len(arr), dtype=bool)
+        if shift <= -len(arr) or shift >= len(arr):
+            pass
+        else:
+            if isinstance(arr, pd.Series):
+                arr = arr.values
+            if other is None:
+                other = arr
+            elif isinstance(other, pd.Series):
+                other = other.values
+            shift = -shift
+            if shift < 0:
+                cmp(arr[:shift], other[-shift:], out=out[:shift])
+            else:
+                cmp(arr[shift:], other[:-shift], out=out[shift:])
+        return out
+
+
+def shift_equal(arr, shift: int, other=None, fill_value: bool = False) -> np.ndarray:
+    return shift_compare(arr, shift, np.equal, other=other, fill_value=fill_value)
+
+
+def shift_unequal(arr, shift: int, other=None, fill_value: bool = True) -> np.ndarray:
+    return shift_compare(arr, shift, np.not_equal, other=other, fill_value=fill_value)
 
 
 def factorize(
@@ -1070,16 +1200,14 @@ def _can_impute(
         template = 0.0 / (1.0 - is_na.astype(np.float32))  # NaN stays NaN, other values are 0
 
     if forward:
-        shift = [(1, template)]
+        shift = [(-1, template)]
     else:
         shift = []
     if backward:
-        shift.append((-1, template.copy()))
+        shift.append((1, template.copy()))
 
     for s, mask_cur in shift:
-        mask0 = group_values != np.roll(group_values, s)
-        mask0[(s - 1) // 2] = True
-        # `mask0` is True for the first/last row of each group if `shift` is 1/-1.
+        mask0 = shift_unequal(group_values, s, fill_value=True)
 
         if isinstance(df, pd.DataFrame):
             for c in df.columns:
@@ -1087,7 +1215,7 @@ def _can_impute(
         else:
             mask_cur[is_na & mask0] = 1.0
 
-        if s > 0:
+        if s < 0:
             mask_cur.ffill(axis=0, inplace=True)
         else:
             mask_cur.bfill(axis=0, inplace=True)

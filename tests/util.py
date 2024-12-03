@@ -52,7 +52,7 @@ def resample_eav_slow(
     new_data = {}
     for i in range(len(windows)):
         if entity_col is None:
-            mask = np.ones(len(df), dtype="bool")
+            mask = np.ones(len(df), dtype=bool)
         else:
             mask = df_entities == windows_entities[i]
         if windows_start is not None:
@@ -164,11 +164,11 @@ def resample_interval_slow(
         try:
             df_inf = np.isposinf(df_dur)
         except:  # noqa
-            df_inf = np.zeros(len(df), dtype="bool")
+            df_inf = np.zeros(len(df), dtype=bool)
     else:
         df_dur = None
         df_nonzero_dur = None
-        df_inf = np.ones(len(df), dtype="bool")
+        df_inf = np.ones(len(df), dtype=bool)
         if start_col in df.columns:
             df_na |= df[start_col].isna()
         else:
@@ -205,7 +205,7 @@ def resample_interval_slow(
             continue
 
         if entity_col is None:
-            entity_mask = np.ones(len(df), dtype="bool")
+            entity_mask = np.ones(len(df), dtype=bool)
         else:
             entity_mask = df_entities == windows_entities[i]
         for a in attributes:
@@ -246,7 +246,7 @@ def resample_interval_slow(
                 try:
                     inter_inf = np.isposinf(inter_dur)
                 except:  # noqa
-                    inter_inf = np.zeros(len(df0), dtype="bool")
+                    inter_inf = np.zeros(len(df0), dtype=bool)
                 if df_dur is None:
                     # all observation intervals are infinite
                     vs[~inter_inf] = epsilon * np.sign(vs[~inter_inf])

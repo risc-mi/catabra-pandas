@@ -7,7 +7,7 @@ from typing import Any, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 
-from .misc import factorize
+from .misc import factorize, roll1d, shift_unequal
 
 
 def merge_intervals(
@@ -670,7 +670,7 @@ def _explode(row_spec: pd.DataFrame, indexer: np.ndarray, swap: bool = False, ke
         n = row_spec["last"] - row_spec["first"] + 1
         out = np.empty((2, n.sum()), dtype=indexer.dtype)
         out[i] = np.repeat(row_spec.index, n)
-        cs = np.roll(np.cumsum(n.values), 1)
+        cs = roll1d(n.cumsum(), 1).values
         cs[:1] = 0
         out[j] = np.repeat(row_spec["first"].values - cs, n) + np.arange(out.shape[1], dtype=out.dtype)
         np.take(indexer, out[j], out=out[j])
@@ -687,8 +687,7 @@ def _explode(row_spec: pd.DataFrame, indexer: np.ndarray, swap: bool = False, ke
             ridx = row_spec.values.flatten()
 
             # mask all elements that are distinct from their previous elements
-            mask = (np.roll(lidx, 1) != lidx) | (np.roll(ridx, 1) != ridx)
-            mask[:1] = True
+            mask = shift_unequal(lidx, -1) | shift_unequal(ridx, -1)
             lidx = lidx[mask]
             ridx = ridx[mask]
         else:
@@ -743,8 +742,7 @@ def _keep_indexers(lidx: np.ndarray, ridx: np.ndarray, keep: str) -> tuple[np.nd
         ridx = s.values.flatten()
 
         # mask all elements that are distinct from their previous elements
-        mask = (np.roll(lidx, 1) != lidx) | (np.roll(ridx, 1) != ridx)
-        mask[:1] = True
+        mask = shift_unequal(lidx, -1) | shift_unequal(ridx, -1)
         lidx = lidx[mask]
         ridx = ridx[mask]
     elif keep != "all":
@@ -1187,8 +1185,7 @@ def _grouped_lexsort(
         else:
             # groups are monotonic increasing
 
-            mask = groups != np.roll(groups, -1)
-            mask[-1] = True
+            mask = shift_unequal(groups, 1)
             n_groups = mask.sum()
             if n_groups == 1:
                 # only one group => sort columns
