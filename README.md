@@ -37,13 +37,36 @@ If you are interested in **CaTabRa-pandas**, you might be interested in **[CaTab
 pip install catabra-pandas
 ```
 
-Once installed, **CaTabRa-pandas** can be readily used:
+Once installed, **CaTabRa-pandas** can be readily used.
+
+### Use-Case: Merge DataFrames based on Overlapping Intervals
 
 ```python
 import pandas as pd
 import catabra_pandas
 
-# use-case: resample observations wrt. given windows
+left = pd.DataFrame(data=dict(start=[0, 7, 1, 8], stop=[2, 8, 5, 9]))
+right = pd.DataFrame(data=dict(start=[10, 4, 0], stop=[11, 5, 3]))
+
+catabra_pandas.merge_intervals(
+    left,
+    right,
+    how="inner",
+    left_start="start",
+    left_stop="stop",
+    right_start="start",
+    right_stop="stop"
+)
+```
+
+**Note**: This is a special case of a *conditional join*. Conditional joins are not supported by pandas by default, but are available in [pyjanitor](https://github.com/pyjanitor-devs/pyjanitor) and [Polars](https://github.com/pola-rs/polars). **The catabra-pandas implementation of interval-overlap- and interval-containment-joins is extremely fast and memory-efficient**, as can be seen in [these benchmarks](benchmarks/Merging.ipynb).
+
+### Use-Case: Resample Observations wrt. Observation Windows
+
+```python
+import pandas as pd
+import catabra_pandas
+
 observations = pd.DataFrame(
     data={
         "subject_id": [0, 0, 0, 0, 1, 1],
@@ -73,12 +96,12 @@ catabra_pandas.resample_eav(
 )
 ```
 
+### Use-Case: Find Containing Intervals
+
 ```python
 import pandas as pd
 import catabra_pandas
 
-# use-case: find containing intervals
-# note: intervals must be pairwise disjoint (in each group)
 intervals = pd.DataFrame(
     data={
         "subject_id": [0, 0, 1],

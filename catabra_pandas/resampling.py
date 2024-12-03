@@ -7,7 +7,15 @@ from typing import Optional, Union
 import numpy as np
 import pandas as pd
 
-from .misc import grouped_mode, inner_or_cross_join, partition_series
+from .misc import (
+    grouped_mode,
+    inner_or_cross_join,
+    partition_series,
+    roll1d,
+    shift_compare,
+    shift_equal,
+    shift_unequal,
+)
 
 # maximum number of rows to allow for intermediate DataFrames when optimizing for "time"
 MAX_ROWS = 10000000
@@ -1262,9 +1270,9 @@ def _resample_eav_pandas(
         # select strategy for each entity: full join (fast but memory intensive) or group (slow but memory efficient)
         if entity_col is None:
             if len(windows) == 1 or (window_pattern["overlapping"] and optimize == "time"):
-                join_mask = np.ones((len(windows),), dtype="bool")
+                join_mask = np.ones((len(windows),), dtype=bool)
             else:
-                join_mask = np.zeros((len(windows),), dtype="bool")
+                join_mask = np.zeros((len(windows),), dtype=bool)
         else:
             join_mask = window_pattern["n"] == 1
             if optimize == "time":
@@ -1602,7 +1610,7 @@ def _group_windows(
             elif window_pattern["regular"]:
                 out.values[:] = np.arange(len(windows), dtype=out.dtype) % window_pattern["n_shifts_regular"]
             else:
-                overlap_mask = np.ones((len(windows),), dtype="bool")  # don't set to True
+                overlap_mask = np.ones((len(windows),), dtype=bool)  # don't set to True
                 pre_group = _pregroup_windows(windows, entity_col, start_col, stop_col, include_both_endpoints)
                 windows_grouped = windows.groupby(pre_group.values).agg({start_col: "min", stop_col: "max"})
                 entity_col = "__entity__"
@@ -1674,18 +1682,13 @@ def _check_disjoint(
     # assumes `df` is sorted wrt. `entity_col` and `start_col`
     # returns either mask or array with entities with overlapping windows
 
-    if entity_col is None:
-        mask = np.ones((len(df),), dtype="bool")
-    else:
-        mask = np.roll(df[entity_col].values, -1) == df[entity_col].values
-    mask[-1:] = False  # works for empty array, too
-    # `mask` now indicates whether next entry belongs to same entity
+    mask = shift_compare(
+        df[stop_col], 1, np.greater_equal if include_both_endpoints else np.greater, other=df[start_col]
+    )
+    # `mask` indicates whether next entry starts before current entry ends
 
-    next_start = np.roll(df[start_col].values, -1)
-    if include_both_endpoints:
-        mask &= df[stop_col] >= next_start
-    else:
-        mask &= df[stop_col] > next_start
+    if entity_col is not None:
+        mask &= shift_equal(df[entity_col], 1)
     # `mask` now indicates whether next entry belongs to same entity and starts before current entry ends
 
     if return_mask:
@@ -1699,16 +1702,11 @@ def _check_disjoint(
 def _pregroup_windows(df: pd.DataFrame, entity_col, start_col, stop_col, include_both_endpoints: bool) -> pd.Series:
     # assumes `df` is sorted wrt. `entity_col` and `start_col`
 
-    prev_stop = np.roll(df[stop_col].values, 1)
-    if include_both_endpoints:
-        mask = (df[start_col] <= prev_stop).values
-    else:
-        mask = (df[start_col] < prev_stop).values
+    mask = shift_compare(df[start_col], -1, np.less_equal if include_both_endpoints else np.less, other=df[stop_col])
     # `mask` indicates whether previous entry stops after current entry starts
 
     if entity_col is not None:
-        mask |= np.roll(df[entity_col].values, 1) != df[entity_col].values
-    mask[:1] = False  # works for empty array, too
+        mask |= shift_unequal(df[entity_col], -1, fill_value=False)  # `mask[0]` must be False
     # `mask` now indicates whether previous entry stops after current entry starts,
     # or previous entry belongs to different entity
 
@@ -1727,7 +1725,7 @@ def _analyze_windows(
             duration = windows[stop_col] - windows[start_col]
             min_duration = duration.min()
             max_duration = duration.max()
-            offset = np.roll(windows[start_col].values, -1) - windows[start_col]
+            offset = roll1d(windows[start_col].values, -1) - windows[start_col]
             min_offset = offset.min()
             max_offset = offset.max()
             regular = (min_duration == max_duration) & (min_offset == max_offset)
@@ -1769,11 +1767,10 @@ def _analyze_windows(
             duration = pd.Series(index=windows[entity_col], data=(windows[stop_col] - windows[start_col]).values)
             duration = duration.groupby(level=0).agg(["min", "max"])
             duration.columns = ["min_duration", "max_duration"]
-            mask = np.roll(windows[entity_col].values, -1) == windows[entity_col].values
-            mask[-1] = False
+            mask = shift_equal(windows[entity_col], 1)
             if mask.any():
                 offset = pd.Series(
-                    index=windows[entity_col], data=np.roll(windows[start_col].values, -1) - windows[start_col].values
+                    index=windows[entity_col], data=roll1d(windows[start_col].values, -1) - windows[start_col].values
                 )
                 offset = offset[mask].groupby(level=0).agg(["min", "max"])
                 offset.columns = ["min_offset", "max_offset"]

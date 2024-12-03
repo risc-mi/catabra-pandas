@@ -1,7 +1,7 @@
 [tool.poetry]
 # https://python-poetry.org/docs/pyproject/
 name = "catabra-pandas"
-version = "0.0.1"
+version = "0.0.2"
 description = "CaTabRa-pandas is a library with additional functionality for pandas"
 license = "Apache 2.0 with Commons Clause"
 authors = ["RISC Software GmbH"]
@@ -17,7 +17,15 @@ classifiers = [
 [tool.poetry.dependencies]
 # https://python-poetry.org/docs/dependency-specification/
 python = "^3.6.1"
-pandas = ">=1.0.0"
+numpy = [
+    {version = ">=1.19.5", python = "<3.9"},
+    {version = ">=1.26.4", python = ">=3.9"}
+]
+pandas = [
+    {version = ">=1.0.0,<3.0", python = "<3.9"},
+    {version = ">=2.2.2,<3.0", python = ">=3.9"}
+    # CoW might be problematic: https://pandas.pydata.org/docs/dev/user_guide/copy_on_write.html
+]
 
 [tool.poetry.group.dev.dependencies]
 # https://python-poetry.org/docs/master/managing-dependencies/

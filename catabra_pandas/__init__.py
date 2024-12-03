@@ -1,9 +1,10 @@
 #  Copyright (c) 2024. RISC Software GmbH.
 #  All rights reserved.
 
+from .merging import find_containing_interval, merge_intervals
 from .misc import (
     combine_intervals,
-    find_containing_interval,
+    factorize,
     group_intervals,
     grouped_mode,
     impute,
@@ -25,4 +26,6 @@ __all__ = [
     "combine_intervals",
     "find_containing_interval",
     "impute",
+    "factorize",
+    "merge_intervals",
 ]

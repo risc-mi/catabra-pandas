@@ -113,15 +113,14 @@ def group_intervals(
     out = pd.Series(index=df_sorted[sorting_col].values, data=0, dtype=np.int64)
     df.drop([sorting_col], axis=1, inplace=True, errors="ignore")
 
-    start = df_sorted[start_col].values
+    start = df_sorted[start_col]
     if start_col == stop_col:
         stop = start
     elif group_by:
         stop = df_sorted.groupby(group_by)[stop_col].cummax()
         assert (stop.index == df_sorted.index).all()
-        stop = stop.values
     else:
-        stop = df_sorted[stop_col].cummax().values
+        stop = df_sorted[stop_col].cummax()
     # `stop` is the per-group cumulative maximum of all previous interval ends.
     # This ensures that some kind of triangle inequality holds: if all interval endpoints are modified according to
     # this procedure and `I_1` and `I_2` are consecutive intervals, then there does not exist another interval `I_3`
@@ -132,18 +131,12 @@ def group_intervals(
     # always end up next to each other, but `dist(I_1, I_3) = 7 < 9 = dist(I_1, I_2)` and
     # `dist(I_2, I_3) = 6 < 9 = dist(I_1, I_2)`.
 
-    dist: np.ndarray = start - np.roll(stop, 1)
-    if isinstance(distance, pd.Timedelta):
-        distance = distance.to_timedelta64()  # cannot be compared to `dist` otherwise
-    if inclusive:
-        same_group_as_prev = dist <= distance
-    else:
-        same_group_as_prev = dist < distance
-
+    same_group_as_prev = shift_compare(
+        start, -1, np.less_equal if inclusive else np.less, other=stop + distance, fill_value=True
+    )
     if len(same_group_as_prev):
         for g in group_by:
-            same_group_as_prev &= df_sorted[g].values == np.roll(df_sorted[g].values, 1)
-        same_group_as_prev[0] = True
+            same_group_as_prev &= shift_equal(df_sorted[g], -1, fill_value=True)
     out.values[:] = (~same_group_as_prev).cumsum()
     out.sort_index(inplace=True)
     out.index = df.index
@@ -166,8 +159,8 @@ def combine_intervals(
     Parameters
     ----------
     df : pd.DataFrame
-        DataFrame with the original intervals. Must have columns `start_col`, `stop_col` and all columns in `cols` and
-        `group_by`.
+        DataFrame with the original intervals. Must have columns `start_col`, `stop_col` and all columns in `attr_cols`
+        and `group_by`.
     start_col : str, default="start"
         Name of the column containing the start (left) endpoints of the intervals.
     stop_col : str, optional, default="stop"
@@ -294,7 +287,7 @@ def combine_intervals(
                 aux["__a"] += aux["__" + str(n)].cumsum() > 0
         mask = np.ones((len(aux),), dtype=bool)
         for g in group_by:
-            mask &= np.roll(aux[g].values, -1) == aux[g].values
+            mask &= shift_equal(aux[g], 1)
         mask[-1] = False
         # `mask[i]` is True iff `i`-th element belongs to same group as next
         assert (mask | (aux["__a"] == 0)).all()
@@ -306,7 +299,7 @@ def combine_intervals(
         # ensure that the last element of each group is False (could be violated if `n_min` is 0)
         aux["__a"] &= mask
 
-        mask = np.roll(aux["__a"].values, 1) != aux["__a"].values
+        mask = shift_unequal(aux["__a"], -1)
         mask[0] = aux["__a"].iloc[0]
         aux = aux[mask]
         if not aux.empty:
@@ -327,160 +320,6 @@ def combine_intervals(
                 return start.join(stop)[mask].reset_index(drop=True)
 
     return pd.DataFrame(columns=group_by + [start_col, length_col if stop_col is None else stop_col])
-
-
-def find_containing_interval(
-    points: pd.DataFrame,
-    intervals: pd.DataFrame,
-    point_cols: str,
-    start_col: str = "start",
-    stop_col: str = "stop",
-    length_col: str = None,
-    include_start: bool = True,
-    include_stop: bool = True,
-    group_by=None,
-) -> pd.DataFrame:
-    """For each point in a given DataFrame, find the interval containing that point (if any) in another given DataFrame
-    of intervals. Intervals must not overlap.
-
-    Parameters
-    ----------
-    points : pd.DataFrame
-        DataFrame with points. Points can have arbitrary comparable data type, like numeric or datetime.
-    intervals : pd.DataFrame
-        DataFrame with intervals. All intervals must have non-NaN endpoints of the same data type as the points in
-        `points`. Furthermore, intervals must not overlap.
-    point_cols : str
-        Name(s) of the column(s) in `points` with actual points. Can be more than one column, which is particularly
-        convenient for finding intervals that contain intervals rather than single points.
-    start_col : str, default="start"
-        Name of the column in `intervals` that contains left endpoints.
-    stop_col : str, default="stop"
-        Name of the column in `intervals` that contains right endpoints.
-    length_col: str, optional
-        Name of the column in `intervals` that contains interval lengths. Precisely one of `stop_col` and `length_col`
-        must be given.
-    include_start : bool, default=True
-        Include the left endpoint of each interval.
-    include_stop : bool, default=True
-        Include the right endpoint of each interval.
-    group_by : optional
-        Column(s) by which to group points and intervals. The containing interval of a point is only searched among the
-        intervals in the same group.
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with identical row index as `points` and one column for every element in `point_cols`, with the
-        same name. Values are -1 or the `iloc`-index (in `intervals`) of the interval containing the respective point.
-
-    Raises
-    ------
-    IntervalOverlapError
-        Raised if intervals overlap.
-    """
-
-    assert (stop_col is None) != (length_col is None)
-
-    if isinstance(point_cols, str):
-        point_cols = [point_cols]
-    else:
-        assert len(point_cols) > 0
-
-    if group_by is None:
-        group_by = []
-    elif isinstance(group_by, str):
-        group_by = [group_by]
-
-    points = points.copy()
-    points["__idx"] = np.arange(len(points))
-    if length_col is None:
-        if include_start and include_stop:
-            mask = intervals[start_col] <= intervals[stop_col]
-        else:
-            mask = intervals[start_col] < intervals[stop_col]
-    else:
-        if include_start and include_stop:
-            # more robust than `intervals['length_col'] >= 0`
-            mask = intervals[start_col] <= intervals[start_col] + intervals[length_col]
-        else:
-            mask = intervals[start_col] < intervals[start_col] + intervals[length_col]
-    arange = np.arange(len(intervals), dtype=np.float64)[mask.values]
-    intervals = intervals[mask].copy()
-    if stop_col is None:
-        # replace length by endpoint
-        intervals[length_col] = intervals[start_col] + intervals[length_col]
-        stop_col = length_col
-    intervals["__idx"] = -1
-
-    aux = pd.concat(
-        [points[group_by + [c, "__idx"]].rename({c: "__point"}, axis=1) for c in point_cols]
-        + [
-            intervals[group_by + [start_col, "__idx"]].rename({start_col: "__point"}, axis=1),
-            intervals[group_by + [stop_col, "__idx"]].rename({stop_col: "__point"}, axis=1),
-        ],
-        axis=0,
-        ignore_index=True,
-    )
-
-    aux["__interval_idx"] = np.nan
-    aux["__interval_idx"].values[-2 * len(intervals) : -len(intervals)] = arange
-
-    typ = np.zeros((len(aux),), dtype=np.int8)
-    if include_start:
-        if include_stop:
-            for i in range(len(point_cols)):
-                typ[i * len(points) : (i + 1) * len(points)] = i + 1
-            typ[-len(intervals) :] = len(point_cols) + 1
-            categories = ["__start"] + list(point_cols) + ["__stop"]
-        else:
-            for i in range(len(point_cols)):
-                typ[i * len(points) : (i + 1) * len(points)] = i + 2
-            typ[-2 * len(intervals) : -len(intervals)] = 1
-            categories = ["__stop", "__start"] + list(point_cols)
-    else:
-        if include_stop:
-            for i in range(len(point_cols)):
-                typ[i * len(points) : (i + 1) * len(points)] = i
-            typ[-2 * len(intervals) : -len(intervals)] = len(point_cols) + 1
-            typ[-len(intervals) :] = len(point_cols)
-            categories = list(point_cols) + ["__stop", "__start"]
-        else:
-            for i in range(len(point_cols)):
-                typ[i * len(points) : (i + 1) * len(points)] = i + 1
-            typ[-2 * len(intervals) : -len(intervals)] = len(point_cols) + 1
-            categories = ["__stop"] + list(point_cols) + ["__start"]
-    aux["__type"] = pd.Categorical.from_codes(typ, categories=categories, ordered=True)
-
-    aux.sort_values(group_by + ["__point", "__type"], inplace=True)
-    aux["__interval_idx"] = aux["__interval_idx"].ffill().fillna(-1).astype(np.int64)
-
-    x = np.zeros((len(aux),), dtype=np.int16)
-    x[(aux["__type"] == "__start").values] = 1
-    x[(aux["__type"] == "__stop").values] = -1
-    x = np.cumsum(x)
-    if (x > 1).any():
-
-        class IntervalOverlapError(ValueError):
-            def __init__(self, offending_intervals):
-                super(IntervalOverlapError, self).__init__(
-                    "Intervals must not overlap. The .iloc-indices of the offending intervals can be accessed through"
-                    " the `offending_intervals` attribute of this exception, which contains a subset of intervals that"
-                    " overlap with another interval (not necessarily contained in the subset)."
-                )
-                self.offending_intervals = offending_intervals
-
-        raise IntervalOverlapError(aux.loc[x > 1, "__interval_idx"].unique())
-    aux.loc[x <= 0, "__interval_idx"] = -1
-
-    aux = aux[aux["__idx"] >= 0].set_index(["__idx", "__type"])["__interval_idx"].unstack(fill_value=-1)
-    aux = aux.reindex(points["__idx"], fill_value=-1)
-    aux.index = points.index
-
-    aux = aux.reindex(point_cols, axis=1, fill_value=-1)
-    aux.columns = point_cols
-
-    return aux
 
 
 def prev_next_values(
@@ -626,13 +465,13 @@ def prev_next_values(
                 df_sorted = df.iloc[sorting]
 
         for g in group_by:
-            prev_mask |= df_aux[g].values != np.roll(df_aux[g].values, 1)
+            prev_mask |= shift_unequal(df_aux[g], -1)
         prev_mask[0] = True
 
         if df_aux is not df_sorted:
             del df_aux
 
-    next_mask = np.roll(prev_mask, -1)  # True iff next element belongs to different group
+    next_mask = roll1d(prev_mask, -1)  # True iff next element belongs to different group
     new_columns = []
     for k, v in columns.items():
         col = v.get("prev_name")
@@ -640,7 +479,7 @@ def prev_next_values(
             if len(df_sorted) == 0:
                 s = pd.Series(index=df_sorted.index, data=df_sorted[k], name=col)
             else:
-                s = pd.Series(index=df_sorted.index, data=np.roll(df_sorted[k], 1), name=col)
+                s = pd.Series(index=df_sorted.index, data=roll1d(df_sorted[k].values, 1), name=col)
                 s[prev_mask] = v.get("prev_fill", pd.Timedelta(None) if s.dtype.kind == "m" else None)
             new_columns.append(s)
 
@@ -649,7 +488,7 @@ def prev_next_values(
             if len(df_sorted) == 0:
                 s = pd.Series(index=df_sorted.index, data=df_sorted[k], name=col)
             else:
-                s = pd.Series(index=df_sorted.index, data=np.roll(df_sorted[k], -1), name=col)
+                s = pd.Series(index=df_sorted.index, data=roll1d(df_sorted[k].values, -1), name=col)
                 s[next_mask] = v.get("next_fill", pd.Timedelta(None) if s.dtype.kind == "m" else None)
             new_columns.append(s)
     if first_indicator_name is not None:
@@ -746,7 +585,7 @@ def partition_series(s: pd.Series, n, shuffle: bool = True) -> pd.Series:
 def impute(
     df: pd.DataFrame,
     method: str = "ffill",
-    group_by: Union[int, str, None] = None,
+    group_by: Union[int, str, pd.Series, pd.Index, np.ndarray, None] = None,
     limit: Optional[int] = None,
     inplace: bool = False,
 ) -> pd.DataFrame:
@@ -764,10 +603,11 @@ def impute(
             to the average of the two values,
         * "lfill": linear interpolation followed by forward- and backward filling; note that if all groups have 3 or
             fewer rows, "lfill" is equivalent to "afill",
-        * "linear": linear interpolation; note that no extrapolation happens, and also note that row index values are
-            completely ignored.
-    group_by : str | int, optional
+        * "linear": linear interpolation; note that no extrapolation happens (equivalent to `area="inside"` in
+            `pd.DataFrame.interpolate()`), and also note that row index values are completely ignored.
+    group_by : str | int | pd.Series | pd.Index | array, optional
         Column or index to group by. Integers are interpreted as row index levels, strings as column names.
+        Series and arrays may be provided as well; this could be the result of function `factorize()`, for instance.
     limit : int, optional
         Imputation limit, applies to both forward/backward filling and linear interpolation.
     inplace : bool, default=False
@@ -777,6 +617,14 @@ def impute(
     -------
     pd.DataFrame
         Imputed DataFrame. Due to the nature of the provided imputation methods, the result may still contain NaN.
+
+    Notes
+    -----
+    This function mainly boosts the performance of grouped linear interpolations, i.e., when `group_by` is not None and
+    `method` is "linear" or "lfill": depending on the input, a speed-up factor of up to 10 is possible (especially if
+    `on` is not mixed up).
+    Other imputation strategies, like "ffill", are not faster than plain `df.groupby(on).ffill()`; they are merely
+    covered for the sake of completeness.
     """
 
     if method == "afill":
@@ -785,7 +633,7 @@ def impute(
         df.fillna(df0, inplace=True)
         df0.fillna(df, inplace=True)
 
-        if isinstance(group_by, int):
+        if isinstance(group_by, (int, np.integer, pd.Series, pd.Index, np.ndarray)):
             columns = list(df.columns)
         else:
             columns = [c for c in df.columns if c != group_by]
@@ -806,23 +654,33 @@ def impute(
         elif method == "bfill":
             out = df.bfill(axis=0, limit=limit, inplace=inplace)
         elif method == "linear":
-            out = df.interpolate(method="linear", axis=0, limit=limit, inplace=inplace)
+            out = df.interpolate(method="linear", axis=0, limit=limit, inplace=inplace, limit_area="inside")
         else:
             raise ValueError('`method` must be "ffill", "bfill", "afill", "lfill" or "linear".')
         return df if out is None else out
 
-    if method == "ffill":
-        shift = [1]
-    elif method == "bfill":
-        shift = [-1]
-    elif method == "linear":
-        shift = [1, -1]
-    else:
+    if method not in ("ffill", "bfill", "linear"):
         raise ValueError('`method` must be "ffill", "bfill", "afill", "lfill" or "linear".')
 
-    if isinstance(group_by, int):
+    if isinstance(group_by, (int, np.integer)):
         columns = list(df.columns)
         group_values = df.index.get_level_values(group_by)
+    elif isinstance(group_by, pd.Series):
+        columns = list(df.columns)
+        if len(group_by) != len(df) or not (group_by.index == df.index).all():
+            group_by = group_by.reindex(df.index)
+        group_values = group_by.values
+    elif isinstance(group_by, pd.Index):
+        if isinstance(group_by, pd.MultiIndex):
+            raise ValueError("Multiindex is not supported")
+        elif len(group_by) != len(df):
+            raise ValueError("Grouper and axis must be same length")
+        columns = list(df.columns)
+        group_values = group_by.get_level_values(0)
+    elif isinstance(group_by, np.ndarray):
+        if len(group_by) != len(df):
+            raise ValueError("Grouper and axis must be same length")
+        columns = list(df.columns)
     else:
         columns = [c for c in df.columns if c != group_by]
         group_values = df[group_by].values
@@ -830,53 +688,45 @@ def impute(
     if not inplace:
         df = df.copy()
 
-    if limit is None and len(df) <= 100 * len(np.unique(group_values)):
+    # the following works for "ffill" and "bfill", too, but empirical results suggest that in these cases
+    # `df.groupby(on).ffill()` is even faster, so we leave it
+    if method == "linear":
         # check whether groups are mixed up
-        mask0 = group_values != np.roll(group_values, -1)
-        mask0[-1] = True
+        mask0 = shift_unequal(group_values, 1)
 
         if len(np.unique(group_values[mask0])) == mask0.sum():
-            # fast version
-            # `mask` specifies those entries that cannot be imputed, and therefore must be set to NaN after imputation
-            mask = None
-            is_na = df[columns].isna()
-            for s in shift:
-                mask0 = group_values != np.roll(group_values, s)
-                mask0[(s - 1) // 2] = True
-                mask_cur = is_na & pd.DataFrame(index=df.index, data={c: mask0 for c in columns})
-                while True:
-                    # the number of iterations of this loop is bounded by the maximum group size
-                    mask1 = is_na & ~mask_cur & np.roll(mask_cur, s, axis=0)
-                    if mask1.any(axis=None):
-                        mask_cur |= mask1
-                    else:
-                        break
-                if mask is None:
-                    mask = mask_cur
-                else:
-                    mask |= mask_cur
+            indexer = None
+        else:
+            indexer = np.argsort(group_values, kind="stable")
+            df = df.iloc[indexer]
+            group_values = group_values[indexer]
 
-            if method == "linear":
-                df[columns] = df[columns].interpolate(method=method, axis=0)
-            elif method == "ffill":
-                df[columns] = df[columns].ffill(axis=0)
-            else:
-                df[columns] = df[columns].bfill(axis=0)
-
-            for c in columns:
-                df.loc[mask[c], c] = None
-
-            return df
-
-    # slow version
-    if method == "linear":
-        df[columns] = (
-            df[columns].groupby(group_values).apply(lambda g: g.interpolate(method=method, axis=0, limit=limit))
+        # `mask` specifies those entries that cannot be imputed, and therefore must be set to NaN after imputation
+        mask = _can_impute(
+            df[columns],
+            group_values,
+            forward=method in ("ffill", "linear"),
+            backward=method in ("bfill", "linear"),
+            union=True,
         )
+
+        if method == "linear":
+            df[columns] = df[columns].interpolate(method=method, axis=0, limit=limit, limit_area="inside")
+        elif method == "ffill":
+            df[columns] = df[columns].ffill(axis=0, limit=limit)
+        else:
+            df[columns] = df[columns].bfill(axis=0, limit=limit)
+
+        for c in columns:
+            df.loc[mask[c], c] = None
+
+        if indexer is not None:
+            df = df.iloc[np.argsort(indexer)]
+
     elif method == "ffill":
-        df[columns] = df[columns].groupby(group_values).ffill(axis=0, limit=limit)
+        df[columns] = df[columns].groupby(group_values).ffill(limit=limit)
     else:
-        df[columns] = df[columns].groupby(group_values).bfill(axis=0, limit=limit)
+        df[columns] = df[columns].groupby(group_values).bfill(limit=limit)
 
     return df
 
@@ -973,6 +823,346 @@ def inner_or_cross_join(left: pd.DataFrame, right: pd.DataFrame, on=None) -> pd.
         return left.join(right, on=on, how="inner")
 
 
+def roll1d(arr, shift: int):
+    """Roll elements of a 1-D array-like.
+
+    Elements that roll beyond the last position are re-introduced at the first.
+
+    Parameters
+    ----------
+    arr : pd.DataFrame | pd.Series | pd.Index | pd.Categorical | pd.ExtensionArray | array-like
+        Input array-like. Must support indexing with int-arrays, either as `arr[idx]` or `arr.iloc[idx]`.
+    shift : int
+        The number of places by which elements are shifted.
+
+    Returns
+    -------
+    Output array-like, with the same shape and type as `a`.
+
+    See Also
+    --------
+    np.roll
+
+    Notes
+    -----
+    In contrast to `np.roll`, which converts everything into a plain array before rolling, this function correctly
+    handles all sorts of pandas objects (including ExtensionArrays) and returns output with the same type.
+    If `shift` is in {-1, 0, 1}, the function is at least as efficient as `np.roll`, depending on the type of `arr`.
+
+    Examples
+    --------
+    >>> x = np.arange(10)
+    >>> roll1d(x, 2)
+    array([8, 9, 0, 1, 2, 3, 4, 5, 6, 7])
+    >>> roll1d(x, -2)
+    array([2, 3, 4, 5, 6, 7, 8, 9, 0, 1])
+    """
+
+    if len(arr) <= 1:
+        return arr
+    else:
+        shift %= len(arr)
+        if shift == 0:
+            return arr
+        elif isinstance(arr, np.ndarray):
+            return np.roll(arr, shift, axis=0)
+        elif isinstance(arr, pd.CategoricalIndex):
+            pd.Index(
+                pd.Categorical.from_codes(
+                    np.roll(arr.codes, shift, axis=0),
+                    categories=arr.categories,
+                    ordered=arr.ordered,
+                ),
+                name=arr.name,
+            )
+        elif isinstance(arr, pd.Index):
+            if arr.nlevels == 1 and arr.dtype.kind in "uifbMmO":
+                return arr.__class__(np.roll(arr, shift, axis=0))
+        elif shift in (1, -1) and hasattr(arr, "shift"):
+            idx = -1 if shift > 0 else 0
+            return arr.shift(shift, fill_value=(arr.iloc[idx] if hasattr(arr, "iloc") else arr[idx]))
+
+        idx = np.arange(-shift, len(arr) - shift)
+        return arr.iloc[idx] if hasattr(arr, "iloc") else arr[idx]
+
+
+def shift_compare(arr, shift: int, cmp, other=None, fill_value: bool = False) -> np.ndarray:
+    """Compare a given 1-D array-like element-wise to a shifted version of itself or another array-like.
+
+    Parameters
+    ----------
+    arr : pd.Series | pd.Index | pd.Categorical | pd.ExtensionArray | array-like
+        The array-like to compare.
+    shift : int
+        The number of places by which elements are shifted.
+    cmp : callable
+        The comparison relation, typically one of `np.equal`, `np.not_equal`, `np.less`, etc.
+        Must accept two equal-length array-likes as input, plus an optional third array-like for storing the output.
+    other : pd.Series | pd.Index | pd.Categorical | pd.ExtensionArray | array-like, optional
+        Other array-like to which `arr` is compared, with the same length and suitable data type.
+        None defaults to `arr`.
+    fill_value : bool, default=False
+        The value used for filling output elements that cannot be determined by comparison, namely the first `-shift`
+        elements if `shift` is negative and the last `shift` elements if it is positive.
+
+    Returns
+    -------
+    mask : np.ndarray
+        Boolean mask, array with the same length as `arr`.
+        `mask[i]` is True iff `cmp(arr[i], other[i + shift])`, or `fill_value` is True and `i + shift` is no valid
+        index.
+        So, if `shift` is -1, `mask` selects all elements that compare to the previous element in `other`, and if
+        `shift` is 1, it selects all elements that compare to the subsequent element.
+
+    Notes
+    -----
+    If `shift` in `(-len(arr), len(arr))`, this function is functionally equivalent to
+    `cmp(arr, roll1d(other, -shift))`, modulo setting some output elements to `fill_value`.
+    Note the `-shift` in `roll1d`!
+
+    In constrast to function `roll1d`, `shift_compare(arr, shift, cmp)` is *not* the same as
+    `shift_compare(arr, shift + len(arr), cmp)`!
+    """
+    if len(arr) == 0:
+        return np.empty(arr.shape, dtype=bool)
+    elif shift == 0:
+        if other is None:
+            return np.ones(len(arr), dtype=bool)
+        else:
+            if isinstance(arr, pd.Series):
+                arr = arr.values
+            if isinstance(other, pd.Series):
+                other = other.values
+            return cmp(arr, other)
+    else:
+        out = np.ones(len(arr), dtype=bool) if fill_value else np.zeros(len(arr), dtype=bool)
+        if shift <= -len(arr) or shift >= len(arr):
+            pass
+        else:
+            if isinstance(arr, pd.Series):
+                arr = arr.values
+            if other is None:
+                other = arr
+            elif isinstance(other, pd.Series):
+                other = other.values
+            shift = -shift
+            if shift < 0:
+                cmp(arr[:shift], other[-shift:], out=out[:shift])
+            else:
+                cmp(arr[shift:], other[:-shift], out=out[shift:])
+        return out
+
+
+def shift_equal(arr, shift: int, other=None, fill_value: bool = False) -> np.ndarray:
+    return shift_compare(arr, shift, np.equal, other=other, fill_value=fill_value)
+
+
+def shift_unequal(arr, shift: int, other=None, fill_value: bool = True) -> np.ndarray:
+    return shift_compare(arr, shift, np.not_equal, other=other, fill_value=fill_value)
+
+
+def factorize(
+    left: Union[pd.DataFrame, pd.Series, pd.Categorical, pd.Index, np.ndarray],
+    right: Union[pd.DataFrame, pd.Series, pd.Categorical, pd.Index, np.ndarray, None] = None,
+    sort: bool = False,
+    return_count: bool = False,
+) -> Union[np.ndarray, tuple[np.ndarray, int], tuple[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray, int]]:
+    """Factorize DataFrames, Series, Indexes or arrays. That means, rows are mapped to integer keys such that rows with
+    identical values are mapped to the same key, and rows with distinct values to distinct keys. This is often a useful
+    preprocessing step in group-by- and join-related functions.
+
+    Parameters
+    ----------
+    left : pd.DataFrame | pd.Series | pd.Index | array
+        First object to factorize.
+    right : pd.DataFrame | pd.Series | pd.Index | array, optional
+        Second object to factorize alongside `left`, optional. If given, matching rows in `left` and `right` are mapped
+        to the same key, and distinct rows to distinct keys.
+        The type of `right` does not need to be the same as the type of `left`, but if `left` has multiple
+        columns/levels, `right` needs to have the same number of columns/levels.
+    sort : bool, default=False
+        If False, the first row in `left` is mapped to the smallest key, the second unique row to the second-smallest
+        key, and so on. This does *not* necessarily imply that the returned arrays are sorted, e.g., if the first row
+        appears multiple times.
+        If True, the smallest row in `left` and `right` (wrt. lexicographic ordering of all columns/levels) is mapped
+        to the smallest key, the second-smallest row to the second-smallest key, and so on.
+        See Notes for more details.
+    return_count : bool, default=False
+        Return the number of unique keys.
+
+    Returns
+    -------
+    left_keys : array
+        Keys of `left`, 1-D array with the same length as `left`.
+    right_keys : array
+        Keys of `right`, 1-D array with the same length as `right`. Only returned if `right` is not None.
+    count : int
+        Number of unique keys appearing in `left_keys` and `right_keys`. Only returned if `return_count` is True.
+        Note that the keys are not necessarily in the interval `[0, count)`.
+
+    See Also
+    --------
+    pandas.core.reshape.merge.get_join_indexers
+    pandas.core.reshape.merge._factorize_keys
+    pandas.core.reshape.merge._get_join_keys
+
+    Notes
+    -----
+    Column/index names in `left` and `right` are completely ignored. NaN and +/-Inf are treated as separate factors.
+
+    With `sort=False`, `left.iloc[_map(left_keys)]` preserves the order of rows in `left`;
+    `right.iloc[_map(right_keys)]` does not necessarily preserve the order of rows in `right`, though.
+    (NB: `_map` is meant to map the keys to the range `[0, len(left))` and `[0, len(right))`, respectively.
+    That's *not* the same as computing the ranks of the keys!)
+
+    With `sort=True`, `left.iloc[np.argsort(left_keys)]` sorts `left` and `right.iloc[np.argsort(right_keys)]` sorts
+    `right`.
+    """
+    # largely inspired by functions in pandas.core.reshape.merge, e.g., `get_join_indexers()`
+
+    if isinstance(left, pd.Categorical):
+        left = pd.Series(left)
+    elif isinstance(left, pd.DataFrame) and left.shape[1] == 1:
+        left = left.iloc[:, 0]
+    if isinstance(right, pd.Categorical):
+        right = pd.Series(right)
+    elif isinstance(right, pd.DataFrame) and right.shape[1] == 1:
+        right = right.iloc[:, 0]
+
+    if isinstance(left, pd.Series):
+        if left.dtype.name == "category":
+            if right is None:
+                left = left.cat.codes.values
+            elif isinstance(right, pd.Series) and left.dtype == right.dtype:
+                left = left.cat.codes.values
+                right = right.cat.codes.values
+            else:
+                left = np.asarray(left.values)
+        else:
+            left = np.asarray(left.values)
+    elif isinstance(left, pd.Index):
+        if not isinstance(left, pd.MultiIndex):
+            left = np.asarray(left._values)
+    elif isinstance(left, np.ndarray):
+        if left.ndim != 1:
+            raise ValueError(f"left must be an array with rank 1, but got rank {left.ndim}")
+
+    if isinstance(right, pd.Series):
+        right = np.asarray(right.values)
+    elif isinstance(right, pd.Index):
+        if not isinstance(right, pd.MultiIndex):
+            right = np.asarray(right._values)
+    elif isinstance(right, np.ndarray):
+        if right.ndim != 1:
+            raise ValueError(f"right must be an array with rank 1, but got rank {right.ndim}")
+
+    # convert datetime arrays into DatetimeArray
+    if isinstance(left, np.ndarray) and left.dtype.kind == "M":
+        left = pd.Index(left)._values
+    if isinstance(right, np.ndarray) and right.dtype.kind == "M":
+        right = pd.Index(right)._values
+
+    # left and right are now either DataFrame, MultiIndex or 1-D array-like; right may also be None
+
+    if right is None:
+        if len(left) == 0:
+            res = (np.empty(0, dtype=np.int64), 0)
+        elif isinstance(left, pd.DataFrame):
+            res = factorize(left, right=left.iloc[:1], sort=sort, return_count=return_count)[::2]
+        else:
+            res = factorize(left, right=left[:1], sort=sort, return_count=return_count)[::2]
+
+        return res if return_count else res[0]
+    elif len(left) == 0:
+        lkey = np.empty(0, dtype=np.int64)
+        res = factorize(right, sort=sort, return_count=return_count)
+        return ((lkey,) + res) if isinstance(res, tuple) else (lkey, res)
+    elif len(right) == 0:
+        rkey = np.empty(0, dtype=np.int64)
+        res = factorize(left, sort=sort, return_count=return_count)
+        return (res[0], rkey, res[1]) if return_count else (res, rkey)
+    else:
+        if isinstance(left, pd.DataFrame):
+            if isinstance(right, pd.DataFrame):
+                if left.shape[1] != right.shape[1]:
+                    raise ValueError(
+                        "left and right must have the same number of columns,"
+                        f" but got {left.shape[1]} and {right.shape[1]}"
+                    )
+                mapped = (
+                    factorize(s, r, sort=sort, return_count=True) for (_, s), (_, r) in zip(left.items(), right.items())
+                )
+                zipped = zip(*mapped)
+                lcodes, rcodes, shape = (list(x) for x in zipped)
+                shape = tuple(shape)
+            elif isinstance(right, pd.MultiIndex):
+                if left.shape[1] != right.nlevels:
+                    raise ValueError(
+                        "left and right must have the same number of columns/levels,"
+                        f" but got {left.shape[1]} and {right.nlevels}"
+                    )
+                lcodes, rcodes, shape = _factorize_df_multiindex(left, right, sort, False)
+            else:
+                raise ValueError(
+                    f"if left is a DataFrame, right must be a DataFrame or MultiIndex, but got {type(right)}"
+                )
+
+            # get flat i8 join keys
+            lkey, rkey = pd.core.reshape.merge._get_join_keys(lcodes, rcodes, shape, sort)
+            return (lkey, rkey, len(np.union1d(lkey, rkey))) if return_count else (lkey, rkey)
+        elif isinstance(left, pd.MultiIndex):
+            if isinstance(right, pd.DataFrame):
+                if left.nlevels != right.shape[1]:
+                    raise ValueError(
+                        "left and right must have the same number of columns/levels,"
+                        f" but got {left.nlevels} and {right.shape[1]}"
+                    )
+                lcodes, rcodes, shape = _factorize_df_multiindex(right, left, sort, True)
+            elif isinstance(right, pd.MultiIndex):
+                if left.nlevels != right.nlevels:
+                    raise ValueError(
+                        "left and right must have the same number of levels,"
+                        f" but got {left.nlevels} and {right.nlevels}"
+                    )
+                mapped = (
+                    factorize(left.levels[i]._values, right.levels[i]._values, sort=sort, return_count=True)
+                    for i in range(left.nlevels)
+                )
+                zipped = zip(*mapped)
+                lcodes, rcodes, shape = (list(x) for x in zipped)
+                lcodes = list(map(np.take, lcodes, left.codes))
+                rcodes = list(map(np.take, rcodes, right.codes))
+
+                # fix labels if there were any nulls
+                for i in range(left.nlevels):
+                    lmask = left.codes[i] == -1
+                    rmask = right.codes[i] == -1
+                    lany = lmask.any()
+                    rany = rmask.any()
+                    if lany or rany:
+                        if lany:
+                            lcodes[i][lmask] = shape[i]
+                        if rany:
+                            rcodes[i][rmask] = shape[i]
+                        shape[i] += 1
+
+                shape = tuple(shape)
+            else:
+                raise ValueError(
+                    f"if left is a MultiIndex, right must be a DataFrame or MultiIndex, but got {type(right)}"
+                )
+
+            # get flat i8 join keys
+            lkey, rkey = pd.core.reshape.merge._get_join_keys(lcodes, rcodes, shape, sort)
+            return (lkey, rkey, len(np.union1d(lkey, rkey))) if return_count else (lkey, rkey)
+        else:
+            if isinstance(right, pd.DataFrame) or isinstance(right, pd.MultiIndex):
+                raise ValueError(f"if left is an array, right must be an array, too, but got {type(right)}")
+            else:
+                res = pd.core.reshape.merge._factorize_keys(left, right, sort=sort)
+                return res if return_count else res[:2]
+
+
 def _parse_column_specs(df: Union[pd.DataFrame, "dask.dataframe.DataFrame"], spec) -> list:  # noqa F821
     if isinstance(spec, (tuple, str, int, np.ndarray, pd.Series)):
         spec = [spec]
@@ -992,3 +1182,82 @@ def _parse_column_specs(df: Union[pd.DataFrame, "dask.dataframe.DataFrame"], spe
         out.append(s)
 
     return out
+
+
+def _can_impute(
+    df: Union[pd.DataFrame, pd.Series],
+    group_values: np.ndarray,
+    forward: bool = False,
+    backward: bool = False,
+    union: bool = True,
+) -> Union[list, pd.DataFrame, pd.Series]:
+    # tacit assumptions:
+    # * `group_values` is not mixed up
+    out = []
+    is_na = df.isna()
+    with np.testing.suppress_warnings("always") as sup:
+        sup.filter(RuntimeWarning)
+        template = 0.0 / (1.0 - is_na.astype(np.float32))  # NaN stays NaN, other values are 0
+
+    if forward:
+        shift = [(-1, template)]
+    else:
+        shift = []
+    if backward:
+        shift.append((1, template.copy()))
+
+    for s, mask_cur in shift:
+        mask0 = shift_unequal(group_values, s, fill_value=True)
+
+        if isinstance(df, pd.DataFrame):
+            for c in df.columns:
+                mask_cur.loc[is_na[c] & mask0, c] = 1.0
+        else:
+            mask_cur[is_na & mask0] = 1.0
+
+        if s < 0:
+            mask_cur.ffill(axis=0, inplace=True)
+        else:
+            mask_cur.bfill(axis=0, inplace=True)
+
+        # all values in `mask_cur` are either 0 or 1; 1-values correspond to entries that cannot be imputed
+        mask_cur = mask_cur.astype(bool)
+
+        if union and len(out) > 0:
+            out[0] |= mask_cur
+        else:
+            out.append(mask_cur)
+
+    return out[0] if len(out) == 1 else out
+
+
+def _factorize_df_multiindex(
+    df: pd.DataFrame, index: pd.MultiIndex, sort: bool, swap: bool
+) -> tuple[np.ndarray, np.ndarray, tuple]:
+    mapped = (
+        factorize(np.asarray(index.levels[i]._values), s.values, sort=sort, return_count=True)
+        for i, (_, s) in enumerate(df.items())
+    )
+    zipped = zip(*mapped)
+    rcodes, lcodes, shape = (list(x) for x in zipped)
+    if sort and not swap:
+        rcodes = list(map(np.take, rcodes, index.codes))
+    else:
+        rcodes = [a.astype("i8", subok=False, copy=True) for a in index.codes]
+
+    # fix right labels if there were any nulls
+    for i, (_, s) in enumerate(df.items()):
+        mask = index.codes[i] == -1
+        if mask.any():
+            # check if there already was any nulls at this location
+            # if there was, it is factorized to `shape[i] - 1`
+            a = s.values[lcodes[i] == shape[i] - 1]
+            if a.size == 0 or not a[0] != a[0]:
+                shape[i] += 1
+
+            rcodes[i][mask] = shape[i] - 1
+
+    if swap:
+        lcodes, rcodes = rcodes, lcodes
+
+    return lcodes, rcodes, tuple(shape)
