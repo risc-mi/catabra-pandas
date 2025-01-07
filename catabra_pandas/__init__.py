@@ -1,4 +1,4 @@
-#  Copyright (c) 2024. RISC Software GmbH.
+#  Copyright (c) 2025. RISC Software GmbH.
 #  All rights reserved.
 
 from .merging import find_containing_interval, merge_intervals

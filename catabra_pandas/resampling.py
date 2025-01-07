@@ -1,4 +1,4 @@
-#  Copyright (c) 2024. RISC Software GmbH.
+#  Copyright (c) 2025. RISC Software GmbH.
 #  All rights reserved.
 
 import collections
