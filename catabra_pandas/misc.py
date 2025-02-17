@@ -225,7 +225,6 @@ def group_intervals(
 
     df[sorting_col] = np.arange(len(df))
     df_sorted = df.sort_values(group_by + [start_col])
-    out = pd.Series(index=df_sorted[sorting_col].values, data=0, dtype=np.int64)
     df.drop([sorting_col], axis=1, inplace=True, errors="ignore")
 
     start = df_sorted[start_col]
@@ -252,7 +251,7 @@ def group_intervals(
     if len(same_group_as_prev):
         for g in group_by:
             same_group_as_prev &= shift_equal(df_sorted[g], -1, fill_value=True)
-    out.values[:] = (~same_group_as_prev).cumsum()
+    out = pd.Series(index=df_sorted[sorting_col].values, data=(~same_group_as_prev).cumsum(), dtype=np.int64)
     out.sort_index(inplace=True)
     out.index = df.index
     return out
@@ -1278,7 +1277,7 @@ def factorize(
                 return res if return_count else res[:2]
 
 
-def _parse_column_specs(df: Union[pd.DataFrame, "dask.dataframe.DataFrame"], spec) -> list:  # noqa F821
+def _parse_column_specs(df: Union[pd.DataFrame, "dask.dataframe.DataFrame"], spec) -> list:  # type: ignore # noqa F821
     if isinstance(spec, (tuple, str, int, np.ndarray, pd.Series)):
         spec = [spec]
     out = []

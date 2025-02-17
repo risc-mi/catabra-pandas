@@ -7,7 +7,7 @@ from typing import Any, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 
-from .misc import factorize, roll1d, shift_unequal
+from .misc import factorize, iloc_loc_assign, roll1d, shift_unequal
 
 
 def merge_intervals(
@@ -660,9 +660,9 @@ def _explode(row_spec: pd.DataFrame, indexer: np.ndarray, swap: bool = False, ke
         n = row_spec["last"] - row_spec["first"] + 1
         out = np.empty((2, n.sum()), dtype=indexer.dtype)
         out[i] = np.repeat(row_spec.index, n)
-        cs = roll1d(n.cumsum(), 1).values
-        cs[:1] = 0
-        out[j] = np.repeat(row_spec["first"].values - cs, n) + np.arange(out.shape[1], dtype=out.dtype)
+        cs = roll1d(n.cumsum(), 1)
+        cs.iloc[:1] = 0
+        out[j] = np.repeat(row_spec["first"].values - cs.values, n) + np.arange(out.shape[1], dtype=out.dtype)
         np.take(indexer, out[j], out=out[j])
 
         if keep != "all":
@@ -683,7 +683,7 @@ def _explode(row_spec: pd.DataFrame, indexer: np.ndarray, swap: bool = False, ke
         else:
             lidx = row_spec.index
             ridx = row_spec[keep].values
-        np.take(indexer, ridx, out=ridx)
+        ridx = np.take(indexer, ridx)
         return np.stack([lidx, ridx], axis=0)
 
 
@@ -729,7 +729,9 @@ def _keep_indexers(lidx: np.ndarray, ridx: np.ndarray, keep: str) -> tuple[np.nd
     if keep == "both":
         s = pd.Series(ridx, index=lidx).groupby(level=0).agg(["min", "max"])
         lidx = np.repeat(np.asarray(s.index, dtype=lidx.dtype), 2)
-        ridx = s.values.flatten()
+        ridx = s.values
+        ridx.flags.writeable = True  # we can safely make `ridx` writeable
+        ridx = ridx.flatten()
 
         # mask all elements that are distinct from their previous elements
         mask = shift_unequal(lidx, -1) | shift_unequal(ridx, -1)
@@ -742,6 +744,7 @@ def _keep_indexers(lidx: np.ndarray, ridx: np.ndarray, keep: str) -> tuple[np.nd
             s = pd.Series(ridx, index=lidx).groupby(level=0).max()
         lidx = np.asarray(s.index, dtype=s.dtype)
         ridx = s.values
+        ridx.flags.writeable = True  # we can safely make `ridx` writeable
     return lidx, ridx
 
 
@@ -1223,8 +1226,8 @@ def _build_df(
     i = 0
     for p, t, s in specs:
         n = len(p)
-        df[type_col].values[i : i + n] = t
+        iloc_loc_assign(df, slice(i, i + n), type_col, t)
         if s is not None:
-            df[idx_col].values[i : i + n] = s.values
+            iloc_loc_assign(df, slice(i, i + n), idx_col, s.values)
         i += n
     return df
