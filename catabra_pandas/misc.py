@@ -7,6 +7,121 @@ import numpy as np
 import pandas as pd
 
 
+def get_loc(
+    index: pd.Index, target, allow_mask: bool = True, allow_slice: bool = True
+) -> Union[np.ndarray, int, slice]:
+    """Get integer location(s), slice or mask of given target(s) in a given Index.
+
+    Parameters
+    ----------
+    index : pd.Index
+        The index in which to search for the target(s).
+    target
+        The target(s) to search for. Can be anything that `loc` accepts, including masks, (partial) labels, iterables
+        of labels, and slices.
+    allow_mask : bool, default=True
+        If True, the output may be a boolean mask.
+    allow_slice : bool, default=True
+        If True, the output may be a slice.
+
+    Returns
+    -------
+    np.ndarray | int | slice
+        Location(s), slice or mask of `target` in `index`. Can be passed to `iloc`.
+
+    See Also
+    --------
+    pd.Index.get_indexer_for: does not support partial labels, and returns -1 for missing labels
+    pd.Index.get_loc: only supports single labels, and does not support masks
+    """
+    if isinstance(target, tuple) or np.isscalar(target):
+        out = index.get_loc(target)
+        if isinstance(out, np.ndarray):
+            if not allow_mask and out.dtype.kind == "b":
+                out = np.flatnonzero(out)
+        elif isinstance(out, slice) and not allow_slice:
+            out = np.arange(*out.indices(len(index)))
+        return out
+    elif isinstance(target, np.ndarray) and target.dtype.kind == "b":
+        # mask
+        if target.ndim == 1:
+            if len(target) == len(index):
+                return target if allow_mask else np.flatnonzero(target)
+            else:
+                raise IndexError("Boolean index has wrong length: {} instead of {}".format(len(target), len(index)))
+    elif isinstance(target, list) and all(isinstance(v, bool) for v in target):
+        # mask
+        if len(target) == len(index):
+            return np.asarray(target) if allow_mask else np.flatnonzero(target)
+        else:
+            raise IndexError("Boolean index has wrong length: {} instead of {}".format(len(target), len(index)))
+
+    # fall-back strategy (slow)
+    out = pd.Series(index=index, data=pd.RangeIndex(len(index))).loc[target]
+    if isinstance(out, pd.Series):
+        out = out.values
+    return out
+
+
+def iloc_loc(df: pd.DataFrame, rows, cols):
+    """Get a DataFrame slice from a single or multiple `iloc` row indices and `loc` column labels.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame to slice.
+    rows
+        Row specification, anything that `iloc` accepts, e.g., integers, iterables of integers, or slices.
+    cols
+        Column specification, anything that `loc` accepts, e.g., a single label, an iterable of labels, or partial
+        labels if `df` has a Multi-column-Index.
+
+    Returns
+    -------
+    DataFrame slice, can be a DataFrame, a Series, or a scalar.
+
+    See Also
+    --------
+    iloc_loc_assign
+    get_loc
+    """
+    return df.iloc[rows, get_loc(df.columns, cols)]
+
+
+def iloc_loc_assign(df: pd.DataFrame, rows, cols, value):
+    """Assign a value to a slice of a DataFrame specified by `iloc` row indices and `loc` column labels.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame to modify.
+    rows
+        Row specification, anything that `iloc` accepts, e.g., integers, iterables of integers, or slices.
+    cols
+        Column specification, anything that `loc` accepts, e.g., a single label, an iterable of labels, or partial
+        labels if `df` has a Multi-column-Index.
+    value
+        Target value, anything with suitable data type and broadcastable shape.
+
+    Returns
+    -------
+    `value`, to enable chained assignments as in
+
+        iloc_loc_assign(df1, rows, cols, iloc_loc_assign(df2, rows, cols, value))
+
+    or
+
+        df1.iloc[rows] = iloc_loc_assign(df2, rows, cols, value)
+
+    See Also
+    --------
+    iloc_loc
+    get_loc
+    """
+    df.iloc[rows, get_loc(df.columns, cols)] = value
+    return value
+
+
 def group_intervals(
     df: pd.DataFrame,
     group_by=None,
@@ -110,7 +225,6 @@ def group_intervals(
 
     df[sorting_col] = np.arange(len(df))
     df_sorted = df.sort_values(group_by + [start_col])
-    out = pd.Series(index=df_sorted[sorting_col].values, data=0, dtype=np.int64)
     df.drop([sorting_col], axis=1, inplace=True, errors="ignore")
 
     start = df_sorted[start_col]
@@ -137,7 +251,7 @@ def group_intervals(
     if len(same_group_as_prev):
         for g in group_by:
             same_group_as_prev &= shift_equal(df_sorted[g], -1, fill_value=True)
-    out.values[:] = (~same_group_as_prev).cumsum()
+    out = pd.Series(index=df_sorted[sorting_col].values, data=(~same_group_as_prev).cumsum(), dtype=np.int64)
     out.sort_index(inplace=True)
     out.index = df.index
     return out
@@ -1163,7 +1277,7 @@ def factorize(
                 return res if return_count else res[:2]
 
 
-def _parse_column_specs(df: Union[pd.DataFrame, "dask.dataframe.DataFrame"], spec) -> list:  # noqa F821
+def _parse_column_specs(df: Union[pd.DataFrame, "dask.dataframe.DataFrame"], spec) -> list:  # type: ignore # noqa F821
     if isinstance(spec, (tuple, str, int, np.ndarray, pd.Series)):
         spec = [spec]
     out = []

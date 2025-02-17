@@ -9,6 +9,7 @@ import pandas as pd
 
 from .misc import (
     grouped_mode,
+    iloc_loc_assign,
     inner_or_cross_join,
     partition_series,
     roll1d,
@@ -22,8 +23,8 @@ MAX_ROWS = 10000000
 
 
 def resample_eav(
-    df: Union[pd.DataFrame, "dask.dataframe.DataFrame"],  # noqa F821
-    windows: Union[pd.DataFrame, "dask.dataframe.DataFrame"],  # noqa F821
+    df: Union[pd.DataFrame, "dask.dataframe.DataFrame"],  # noqa F821 # type: ignore
+    windows: Union[pd.DataFrame, "dask.dataframe.DataFrame"],  # noqa F821 # type: ignore
     agg: dict = None,
     entity_col=None,
     time_col=None,
@@ -32,7 +33,7 @@ def resample_eav(
     include_start: bool = True,
     include_stop: bool = False,
     optimize: str = "time",
-) -> Union[pd.DataFrame, "dask.dataframe.DataFrame"]:  # noqa F821
+) -> Union[pd.DataFrame, "dask.dataframe.DataFrame"]:  # type: ignore # noqa F821
     """Resample data in EAV (entity-attribute-value) format wrt. explicitly passed windows of arbitrary (possibly
     infinite) length.
 
@@ -450,8 +451,8 @@ def resample_eav(
 
 
 def resample_interval(
-    df: Union[pd.DataFrame, "dask.dataframe.DataFrame"],  # noqa F821
-    windows: Union[pd.DataFrame, "dask.dataframe.DataFrame"],  # noqa F821
+    df: Union[pd.DataFrame, "dask.dataframe.DataFrame"],  # noqa F821 # type: ignore
+    windows: Union[pd.DataFrame, "dask.dataframe.DataFrame"],  # noqa F821 # type: ignore
     attributes: list = None,
     entity_col=None,
     start_col=None,
@@ -460,7 +461,7 @@ def resample_interval(
     value_col=None,
     time_col=None,
     epsilon=1e-7,
-) -> Union[pd.DataFrame, "dask.dataframe.DataFrame"]:  # noqa F821
+) -> Union[pd.DataFrame, "dask.dataframe.DataFrame"]:  # type: ignore # noqa F821
     """Resample interval-like data wrt. explicitly passed windows of arbitrary (possibly infinite) length.
     "Interval-like" means that each observation is characterized by a start- and stop time rather than a singular
     timestamp (as in EAV data).
@@ -1001,7 +1002,7 @@ class make_windows:
                     )
                 else:
                     # reindex `values` in place
-                    value.values[:] = value.reindex(index).values
+                    value.iloc[:] = value.reindex(index).values
                     value.index = index
 
         if index is None:
@@ -1608,7 +1609,7 @@ def _group_windows(
                 # no overlapping windows => nothing to do
                 pass
             elif window_pattern["regular"]:
-                out.values[:] = np.arange(len(windows), dtype=out.dtype) % window_pattern["n_shifts_regular"]
+                out.iloc[:] = np.arange(len(windows), dtype=out.dtype) % window_pattern["n_shifts_regular"]
             else:
                 overlap_mask = np.ones((len(windows),), dtype=bool)  # don't set to True
                 pre_group = _pregroup_windows(windows, entity_col, start_col, stop_col, include_both_endpoints)
@@ -1632,7 +1633,7 @@ def _group_windows(
                 regular_mask = windows[entity_col].isin(window_pattern[regular_patt_mask].index)
                 s = pd.Series(index=windows.loc[regular_mask, entity_col].values, data=1).groupby(level=0).cumsum() - 1
                 assert (s.index == windows.loc[regular_mask, entity_col].values).all()
-                out.values[regular_mask] = (s % window_pattern["n_shifts_regular"].reindex(s.index)).values
+                out.iloc[regular_mask] = (s % window_pattern["n_shifts_regular"].reindex(s.index)).values
 
         if np.any(overlap_mask):  # works if `overlap_mask` is bool
             # if offending entities exist, they must be processed manually => SLOW!
@@ -1656,12 +1657,12 @@ def _group_windows(
                     tmp = sub[[entity_col, start_col, "__i__"]][mask1].join(cur, on=entity_col, how="left")
                     mask1 &= (tmp["__i__"] > tmp["__j__"]) & (getattr(tmp[start_col], comp)(tmp[stop_col]))
                 indices = np.concatenate(indices)
-                windows_grouped["__grp__"].values[indices] = grp_idx
+                iloc_loc_assign(windows_grouped, indices, "__grp__", grp_idx)
                 grp_idx += 1
                 mask0[mask0] &= ~sub["__i__"].isin(indices)
             # `windows_grouped` now has an additional column "__grp__"
 
-            out.values[overlap_mask] = windows_grouped["__grp__"].reindex(pre_group.values, fill_value=0).values
+            out.iloc[overlap_mask] = windows_grouped["__grp__"].reindex(pre_group.values, fill_value=0).values
 
         return out
     else:
@@ -1846,7 +1847,7 @@ def _resample_eav_no_windows(
             if isinstance(aux, pd.Series):
                 aux = aux.to_frame()
             for i, a in enumerate(agg):
-                out[(attr, a)].values[aux.index.values] = aux.iloc[:, i].values
+                iloc_loc_assign(out, aux.index.values, (attr, a), aux.iloc[:, i].values)
 
     for attr, (mode, mode_count) in mode_agg.items():
         aux = grouped_mode(df.loc[attr_mask if attribute_col is None else (df[attribute_col] == attr), value_col])
@@ -1858,7 +1859,7 @@ def _resample_eav_no_windows(
         else:
             columns = [((attr, "mode_count"), "count")]
         for c_out, c_aux in columns:
-            out[c_out].values[aux.index.values] = aux[c_aux].values
+            iloc_loc_assign(out, aux.index.values, c_out, aux[c_aux].values)
 
     for attr, quantiles in quantile_agg.items():
         aux = (
@@ -1869,7 +1870,7 @@ def _resample_eav_no_windows(
         )
         if not aux.empty:
             for i, (_, a) in enumerate(quantiles):
-                out[(attr, a)].values[aux.index.values] = aux.iloc[:, i].values
+                iloc_loc_assign(out, aux.index.values, (attr, a), aux.iloc[:, i].values)
 
     for attr, aggs in custom_agg.items():
         df0 = df.loc[attr_mask if attribute_col is None else (df[attribute_col] == attr), [time_col, value_col]]
@@ -1877,10 +1878,10 @@ def _resample_eav_no_windows(
             aux = func(df0)
             if not aux.empty:
                 if isinstance(aux, pd.Series):
-                    out[(attr, aux.name or func.__name__)].values[aux.index.values] = aux.values
+                    iloc_loc_assign(out, aux.index.values, (attr, aux.name or func.__name__), aux.values)
                 else:
                     for c in aux.columns:
-                        out[(attr, c)].values[aux.index.values] = aux[c].values
+                        iloc_loc_assign(out, aux.index.values, (attr, c), aux[c].values)
 
 
 def _resample_eav_ranks(
@@ -1960,7 +1961,7 @@ def _resample_eav_ranks(
         # `aux` has columns `time_col`, "__rank__" and "__observation_idx__"; other columns are obsolete
 
         if other_endpoint is not None:
-            start = pd.Series(data=out[other_endpoint].values).reindex(aux.index, copy=False)
+            start = pd.Series(data=out[other_endpoint].values).reindex(aux.index)
             mask = ~getattr(start, comp)(aux[time_col])  # handles NA times correctly
             aux.loc[mask, "__observation_idx__"] = -1
             aux.loc[mask, time_col] = None
@@ -1977,9 +1978,9 @@ def _resample_eav_ranks(
                 r0 = r
             m = aux["__rank__"] == r0
             if v:
-                out[(attr, "r" + str(r))].values[:] = aux.loc[m, value_col].values
+                iloc_loc_assign(out, slice(None), (attr, "r" + str(r)), aux.loc[m, value_col].values)
             if t:
-                out[(attr, "t" + str(r))].values[:] = aux.loc[m, time_col].values
+                iloc_loc_assign(out, slice(None), (attr, "t" + str(r)), aux.loc[m, time_col].values)
 
 
 def _resample_eav_ranks_2(
@@ -2054,9 +2055,9 @@ def _resample_eav_ranks_2(
                     mask = (getattr(aux[(time_col, r)], comp)(out[other_endpoint].values)).values
                     if mask.any():
                         if v:
-                            out[(attr, "r" + str(r))].values[mask] = aux[(value_col, r)].values[mask]
+                            iloc_loc_assign(out, mask, (attr, "r" + str(r)), aux[(value_col, r)].values[mask])
                         if t:
-                            out[(attr, "t" + str(r))].values[mask] = aux[(time_col, r)].values[mask]
+                            iloc_loc_assign(out, mask, (attr, "t" + str(r)), aux[(time_col, r)].values[mask])
 
 
 def _resample_interval_aux(
@@ -2108,7 +2109,7 @@ def _resample_interval_aux(
             mask &= ~(is_num_inf | is_denom_inf)
         except TypeError:
             is_eps = pd.Series(index=df.index, data=False)
-        factor.values[mask.values] = (numerator[mask] / duration[mask]).values
+        factor[mask] = (numerator[mask] / duration[mask]).astype(factor.dtype).values
 
     eps_value = epsilon * np.sign(df.loc[is_eps, value_col])
     df[value_col] = df[value_col] * factor

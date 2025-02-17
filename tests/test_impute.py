@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from catabra_pandas import impute
+from catabra_pandas import iloc_loc_assign, impute
 
 from .util import compare_dataframes, create_random_series
 
@@ -78,7 +78,7 @@ def test_all_nan():
         data=dict(a=[1.0, 1.0, 2.0, 3.0, 3.0, np.nan, np.nan, np.nan, 8.0, 9.0, 9.0, 10.0, 10.0]),
     )
     df = gt.copy()
-    df["a"].values[[0, 2, 4, -2, -3]] = np.nan
+    iloc_loc_assign(df, [0, 2, 4, -2, -3], "a", np.nan)
 
     res = impute(df, method="lfill", group_by=0, limit=None, inplace=False)
 

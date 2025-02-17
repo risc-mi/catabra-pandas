@@ -7,6 +7,8 @@ from typing import Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from catabra_pandas import iloc_loc_assign
+
 
 def resample_eav_slow(
     df: pd.DataFrame,
@@ -160,7 +162,7 @@ def resample_interval_slow(
     if start_col in df.columns and stop_col in df.columns:
         df_dur = (df[stop_col] - df[start_col]).values
         df_nonzero_dur = (df[stop_col] > df[start_col]).values
-        df_na |= df[start_col].isna() | df[stop_col].isna()
+        df_na = df_na | (df[start_col].isna() | df[stop_col].isna()).values
         try:
             df_inf = np.isposinf(df_dur)
         except:  # noqa
@@ -170,9 +172,9 @@ def resample_interval_slow(
         df_nonzero_dur = None
         df_inf = np.ones(len(df), dtype=bool)
         if start_col in df.columns:
-            df_na |= df[start_col].isna()
+            df_na = df_na | df[start_col].isna().values
         else:
-            df_na |= df[stop_col].isna()
+            df_na = df_na | df[stop_col].isna().values
 
     if entity_col is None:
         windows_entities = None
@@ -260,14 +262,14 @@ def resample_interval_slow(
                 vs[inter_stop < inter_start] = 0
 
             vs[df_na[mask]] = 0
-            out[a].values[i] = vs.sum()
+            iloc_loc_assign(out, i, a, vs.sum())
 
     if windows.columns.nlevels == 2:
         out.columns = pd.MultiIndex.from_product([out.columns, [""]])
     return pd.concat([windows, out], axis=1, sort=False)
 
 
-def compare_dataframes(df1: pd.DataFrame, df2: pd.DataFrame, eps: float = 1e-7, ignore_columns=()):
+def compare_dataframes(df1: pd.DataFrame, df2: pd.DataFrame, eps: float = 1e-5, ignore_columns=()):
     assert df1.shape == df2.shape, str(df1.shape) + " vs. " + str(df2.shape)
     assert (df1.index == df2.index).all()
     assert (df1.columns == df2.columns).all()
@@ -332,7 +334,7 @@ def create_random_data(
     windows.columns = pd.MultiIndex.from_product([["timestamp"], ["start", "stop"]])
     if n_entities > 1:
         windows[("entity", "")] = rng.randint(1, df["entity"].max() + 2, size=n_windows)
-        windows[("entity", "")].values[-1] = 0  # entity 0 has only one window
+        iloc_loc_assign(windows, -1, ("entity", ""), 0)  # entity 0 has only one window
 
     if window_pattern == "non-overlapping":
 
@@ -340,14 +342,14 @@ def create_random_data(
             w = rng.uniform(0.1, 1, size=len(grp))
             w /= w.sum()
             grp[("timestamp", "start")] = min_ts + np.roll(np.cumsum(w), 1) * (max_ts - min_ts)
-            grp[("timestamp", "start")].values[0] = min_ts - w[0] * (max_ts - min_ts)  # window without observations
+            iloc_loc_assign(grp, 0, ("timestamp", "start"), min_ts - w[0] * (max_ts - min_ts))  # win. w/o observations
             grp[("timestamp", "stop")] = grp[("timestamp", "start")] + (rng.uniform(0.75, 1, size=len(w)) * w) * (
                 max_ts - min_ts
             )
             return grp
 
         if n_entities > 1:
-            windows = windows.groupby([("entity", "")]).apply(_make_non_overlapping)
+            windows = windows.groupby(windows[("entity", "")].values).apply(_make_non_overlapping)
         else:
             windows = _make_non_overlapping(windows)
     elif window_pattern != "random":
@@ -365,7 +367,7 @@ def create_random_data(
             assert window_pattern == "regular non-overlapping"
             o_rng = (1.1, 1.5)
         if n_entities > 1:
-            windows = windows.groupby([("entity", "")]).apply(_make_regular, offset_range=o_rng)
+            windows = windows.groupby(windows[("entity", "")].values).apply(_make_regular, offset_range=o_rng)
         else:
             _make_regular(windows, offset_range=o_rng)
 

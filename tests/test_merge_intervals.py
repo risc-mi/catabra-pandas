@@ -65,6 +65,7 @@ def _merge_intervals_slow(
         mask = np.ones(len(left), dtype=bool)
     else:
         mask = left[left_start].notna().values
+        mask.flags.writeable = True  # we can safely make `mask` writeable
     if left_stop is not None:
         mask &= left[left_stop].notna().values
     if left_start is not None and left_stop is not None and left_start != left_stop:
@@ -75,6 +76,7 @@ def _merge_intervals_slow(
         mask = np.ones(len(right), dtype=bool)
     else:
         mask = right[right_start].notna().values
+        mask.flags.writeable = True  # we can safely make `mask` writeable
     if right_stop is not None:
         mask &= right[right_stop].notna().values
     if right_start is not None and right_stop is not None and right_start != right_stop:
