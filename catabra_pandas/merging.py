@@ -725,7 +725,7 @@ def _get_equi_join_indexers(
     return np.stack([lidx, ridx], axis=0)
 
 
-def _keep_indexers(lidx: np.ndarray, ridx: np.ndarray, keep: str) -> tuple[np.ndarray, np.ndarray]:
+def _keep_indexers(lidx: np.ndarray, ridx: np.ndarray, keep: str) -> Tuple[np.ndarray, np.ndarray]:
     if keep == "both":
         s = pd.Series(ridx, index=lidx).groupby(level=0).agg(["min", "max"])
         lidx = np.repeat(np.asarray(s.index, dtype=lidx.dtype), 2)

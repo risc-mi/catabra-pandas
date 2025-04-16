@@ -1,7 +1,7 @@
 #  Copyright (c) 2025. RISC Software GmbH.
 #  All rights reserved.
 
-from typing import Optional, Union
+from typing import Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -1121,7 +1121,7 @@ def factorize(
     right: Union[pd.DataFrame, pd.Series, pd.Categorical, pd.Index, np.ndarray, None] = None,
     sort: bool = False,
     return_count: bool = False,
-) -> Union[np.ndarray, tuple[np.ndarray, int], tuple[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray, int]]:
+) -> Union[np.ndarray, Tuple[np.ndarray, int], Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray, int]]:
     """Factorize DataFrames, Series, Indexes or arrays. That means, rows are mapped to integer keys such that rows with
     identical values are mapped to the same key, and rows with distinct values to distinct keys. This is often a useful
     preprocessing step in group-by- and join-related functions.
@@ -1393,7 +1393,7 @@ def _can_impute(
 
 def _factorize_df_multiindex(
     df: pd.DataFrame, index: pd.MultiIndex, sort: bool, swap: bool
-) -> tuple[np.ndarray, np.ndarray, tuple]:
+) -> Tuple[np.ndarray, np.ndarray, tuple]:
     mapped = (
         factorize(np.asarray(index.levels[i]._values), s.values, sort=sort, return_count=True)
         for i, (_, s) in enumerate(df.items())
