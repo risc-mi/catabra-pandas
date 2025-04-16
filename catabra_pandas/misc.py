@@ -845,17 +845,24 @@ def impute(
     return df
 
 
-def grouped_mode(series: pd.Series, dropna: bool = True) -> pd.DataFrame:
-    """Group the given Series `series` by its row index and compute mode aggregations. If there are more than one most
-    frequent values in a group, the "first" is chosen, i.e., the result is always one single value.
+def grouped_mode(arg: Union[pd.DataFrame, pd.Series], group_by=None, column=None, dropna: bool = True) -> pd.DataFrame:
+    """Group the given DataFrame or Series and compute mode aggregations. If there are more than one most frequent
+    values in a group, the "first" is chosen, i.e., the result is always one single value.
 
     Parameters
     ----------
-    series : pd.Series
-        The Series to aggregate. The number of row index levels is arbitrary.
+    arg : pd.DataFrame | pd.Series
+        The DataFrame or Series to aggregate. The number of row index levels is arbitrary.
+    group_by : list | str, optional
+        Column(s) or row index level(s) to group `arg` by. Can be the name of a single column or a list of column names
+        and/or row index levels. Strings are interpreted as column names or row index names, integers are interpreted
+        as row index levels. If None, `arg` is grouped by its row index.
+    column : str, optional
+        The single column for which to compute the mode, if `arg` is a DataFrame. Ignored if `arg` is a Series.
     dropna : bool, default=True
         Drop NaN values before computing the mode. If True, the most frequent value of a group is NaN iff all values of
         the group are NaN.
+        Rows with NaN in the `group_by`-columns are always ignored.
 
     Returns
     -------
@@ -874,23 +881,57 @@ def grouped_mode(series: pd.Series, dropna: bool = True) -> pd.DataFrame:
     .. [1] https://stackoverflow.com/a/38216118
     """
 
-    group_levels = list(range(series.index.nlevels + 1))
-    idx = series.groupby(level=group_levels[:-1]).size().index
-    mask = series.notna().values if dropna else np.ones(len(series), dtype=bool)
-    if mask.any():
-        series = series.to_frame("mode")
-        series.set_index("mode", append=True, inplace=True)
-        df = series[mask].groupby(level=group_levels, dropna=False, observed=True).size().to_frame("count")
-        df.reset_index(level=-1, inplace=True)
-        df.sort_values("count", ascending=False, inplace=True, kind="stable")
-        df = df.loc[~df.index.duplicated()].reindex(idx)
-        df["count"] = df["count"].fillna(0).astype(np.int64)
-    elif len(series) > 0:
-        df = pd.Series(index=idx, data=None, dtype=series.dtype).to_frame("mode")
-        df["count"] = 0
+    if group_by is None:
+        group_by = list(range(arg.index.nlevels))
     else:
-        df = series.to_frame("mode")
+        group_by = _parse_column_specs(arg, group_by)
+
+    if isinstance(arg, pd.DataFrame):
+        if column is None:
+            raise ValueError("column must be specified if arg is a DataFrame.")
+        mask = arg[column].notna().values
+        dtype = arg[column].dtype
+        if all(isinstance(g, int) for g in group_by):
+            arg = arg[column]
+            idx = arg.groupby(level=group_by).size().index
+        else:
+            idx = arg.groupby(by=group_by).size().index
+    else:
+        dtype = arg.dtype
+        idx = arg.groupby(level=group_by).size().index
+        mask = arg.notna().values
+
+    if len(arg) == 0 or (dropna and not mask.any()):
+        df = pd.DataFrame(index=idx, data=dict(mode=None), dtype=dtype)
         df["count"] = 0
+        return df
+
+    kwargs = dict(observed=True)
+    if not (dropna or mask.all()):
+        kwargs["dropna"] = False
+    if isinstance(arg, pd.DataFrame):
+        kwargs["by"] = group_by + [column]
+    else:
+        arg = arg.to_frame("mode")
+        arg.set_index("mode", append=True, inplace=True)
+        kwargs["level"] = group_by + [arg.index.nlevels - 1]
+
+    try:
+        if dropna:
+            df = arg[mask].groupby(**kwargs).size().to_frame("count")
+        else:
+            df = arg.groupby(**kwargs).size().to_frame("count")
+    except TypeError:
+        raise ValueError(
+            "DataFrame.groupby does not accept keyword argument dropna in pandas version {}."
+            " Set dropna to True.".format(pd.__version__)
+        )
+
+    df.reset_index(level=-1, inplace=True)
+    df.columns = ["mode", "count"]
+    df.sort_values("count", ascending=False, inplace=True, kind="stable")
+    df = df.loc[~df.index.duplicated()].reindex(idx)
+    df["count"] = df["count"].fillna(0).astype(np.int64)
 
     return df
 
@@ -1277,7 +1318,10 @@ def factorize(
                 return res if return_count else res[:2]
 
 
-def _parse_column_specs(df: Union[pd.DataFrame, "dask.dataframe.DataFrame"], spec) -> list:  # type: ignore # noqa F821
+def _parse_column_specs(
+    df: Union[pd.DataFrame, pd.Series, "dask.dataframe.DataFrame"],  # type: ignore # noqa F821
+    spec,
+) -> list:
     if isinstance(spec, (tuple, str, int, np.ndarray, pd.Series)):
         spec = [spec]
     out = []
@@ -1287,11 +1331,13 @@ def _parse_column_specs(df: Union[pd.DataFrame, "dask.dataframe.DataFrame"], spe
                 s += df.index.nlevels
             assert 0 <= s < df.index.nlevels
         elif isinstance(s, str):
+            assert hasattr(df, "columns")
             if s not in df.columns:
                 s = list(df.index.names).index(s)
         elif isinstance(s, tuple):
+            assert hasattr(df, "columns")
             assert s in df.columns
-        elif isinstance(df, pd.DataFrame):
+        elif isinstance(df, (pd.DataFrame, pd.Series)):
             assert len(s) == len(df)
         out.append(s)
 
