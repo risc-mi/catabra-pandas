@@ -1025,7 +1025,8 @@ class make_windows:
             stop_col = (time_col, "stop")
 
         if entity is None or entity_col is None:
-            out = pd.DataFrame(index=index)
+            # `columns` is necessary, since otherwise `out` has a single column index level
+            out = pd.DataFrame(index=index, columns=None if time_col is None else pd.MultiIndex.from_product([[], []]))
         elif isinstance(entity, pd.Series):
             out = entity.to_frame(entity_col)
         else:

@@ -17,6 +17,15 @@ _df = pd.DataFrame(
 )
 
 
+def test_no_entity():
+    mw = make_windows(anchor="start", start_rel=pd.Timedelta(-5, unit="s"), duration=pd.Timedelta(10, unit="s"))
+    windows = mw(df=_df, time_col="start")
+
+    assert len(windows) == len(_df)
+    assert (windows.index == _df.index).all()
+    assert windows.columns.nlevels == 2
+
+
 @pytest.mark.parametrize(ids=["None", "start", "stop"], argnames=["anchor"], argvalues=[(None,), ("start",), ("stop",)])
 def test_no_df(anchor):
     mw = make_windows(start_rel=pd.Timedelta("-1 hour"), duration=pd.Timedelta("10 minutes"), anchor=anchor)
