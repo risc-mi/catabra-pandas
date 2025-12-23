@@ -23,7 +23,6 @@ RUN apt-get update && apt-get install -yq \
     libffi-dev \
     liblzma-dev \
     git \
-    python3-distutils \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PYENV_ROOT $HOME/.pyenv
