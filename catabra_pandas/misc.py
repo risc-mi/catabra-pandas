@@ -201,9 +201,11 @@ def group_intervals(
             # construct new DataFrame
             df_new = pd.DataFrame(
                 data={
-                    f"g{i}": df[g]
-                    if isinstance(g, (str, tuple))
-                    else (df.index.get_level_values(g) if isinstance(g, int) else g)
+                    f"g{i}": (
+                        df[g]
+                        if isinstance(g, (str, tuple))
+                        else (df.index.get_level_values(g) if isinstance(g, int) else g)
+                    )
                     for i, g in enumerate(group_by)
                 }
             )
@@ -552,9 +554,11 @@ def prev_next_values(
             # construct new DataFrame
             df_aux = pd.DataFrame(
                 data={
-                    k: df[c]
-                    if isinstance(c, (str, tuple))
-                    else (df.index.get_level_values(c) if isinstance(c, int) else c)
+                    k: (
+                        df[c]
+                        if isinstance(c, (str, tuple))
+                        else (df.index.get_level_values(c) if isinstance(c, int) else c)
+                    )
                     for k, c in [("g" + str(i), g) for i, g in enumerate(group_by)]
                     + [("s" + str(i), s) for i, s in enumerate(sort_by)]
                 }
