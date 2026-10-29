@@ -1,4 +1,4 @@
-#  Copyright (c) 2025. RISC Software GmbH.
+#  Copyright (c) 2026. RISC Software GmbH.
 #  All rights reserved.
 
 import collections
@@ -1634,7 +1634,9 @@ def _group_windows(
                 regular_mask = windows[entity_col].isin(window_pattern[regular_patt_mask].index)
                 s = pd.Series(index=windows.loc[regular_mask, entity_col].values, data=1).groupby(level=0).cumsum() - 1
                 assert (s.index == windows.loc[regular_mask, entity_col].values).all()
-                out.iloc[regular_mask] = (s % window_pattern["n_shifts_regular"].reindex(s.index)).values
+                out.iloc[regular_mask] = (s % window_pattern["n_shifts_regular"].reindex(s.index)).values.astype(
+                    out.dtype
+                )
 
         if np.any(overlap_mask):  # works if `overlap_mask` is bool
             # if offending entities exist, they must be processed manually => SLOW!
@@ -1663,7 +1665,9 @@ def _group_windows(
                 mask0[mask0] &= ~sub["__i__"].isin(indices)
             # `windows_grouped` now has an additional column "__grp__"
 
-            out.iloc[overlap_mask] = windows_grouped["__grp__"].reindex(pre_group.values, fill_value=0).values
+            out.iloc[overlap_mask] = (
+                windows_grouped["__grp__"].reindex(pre_group.values, fill_value=0).values.astype(out.dtype)
+            )
 
         return out
     else:
