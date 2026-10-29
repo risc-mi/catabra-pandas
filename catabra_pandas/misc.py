@@ -1,4 +1,4 @@
-#  Copyright (c) 2025. RISC Software GmbH.
+#  Copyright (c) 2026. RISC Software GmbH.
 #  All rights reserved.
 
 from typing import Optional, Tuple, Union
